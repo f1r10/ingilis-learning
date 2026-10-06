@@ -1,0 +1,30 @@
+# Env / secrets
+.env
+*.env.local
+backend/.env
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node / frontend
+node_modules/
+frontend/dist/
+frontend/.vite/
+*.local
+
+# Build / runtime artifacts
+celerybeat-schedule
+*.log
+.DS_Store
+coverage/
+.minio/
+postgres_data/
+redis_data/
+backend/.verify-phase12/

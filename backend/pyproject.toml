@@ -1,0 +1,60 @@
+[project]
+name = "language-learning-platform-backend"
+version = "0.1.0"
+description = "Self-hostable language learning CMS, examination and analytics platform (FastAPI backend)"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "pydantic>=2.8",
+    "pydantic-settings>=2.4",
+    "email-validator>=2.2",
+    "sqlalchemy[asyncio]>=2.0",
+    "asyncpg>=0.29",
+    "alembic>=1.13",
+    "greenlet>=3.0",
+    "argon2-cffi>=23.1",
+    "itsdangerous>=2.2",
+    "python-multipart>=0.0.9",
+    "redis>=5.0",
+    "arq>=0.26",
+    "boto3>=1.35",
+    "httpx>=0.27",
+    "orjson>=3.10",
+    "typer>=0.12",
+    "rich>=13.7",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.6",
+    "mypy>=1.11",
+    "types-boto3>=1.35",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+# Pinned on purpose: ruff's default rule set grows between releases, and a lint
+# gate that changes meaning on upgrade is useless. These families catch real
+# defects - syntax/bugbear-level errors (E4/E7/E9), dead code and undefined
+# names (F) - plus import order (I). FastAPI's `Depends()` in a signature default
+# is required by the framework, so B008-style rules are deliberately out.
+select = ["E4", "E7", "E9", "F", "I"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["app", "scripts"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

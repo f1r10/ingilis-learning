@@ -1,0 +1,58 @@
+{
+  "nav": {
+    "dashboard": "Panel",
+    "students": "Öğrenciler",
+    "groups": "Gruplar",
+    "settings": "Ayarlar",
+    "logout": "Çıkış"
+  },
+  "login": {
+    "teacher_tab": "Öğretmen",
+    "student_tab": "Öğrenci",
+    "username": "Kullanıcı adı",
+    "password": "Şifre",
+    "access_key": "Erişim anahtarı",
+    "sign_in": "Giriş yap",
+    "recover": "Şifrenizi mi unuttunuz?",
+    "recover_title": "Tek kullanımlık kodla kurtarın",
+    "recover_code": "Kurtarma kodu",
+    "back": "Girişe dön"
+  },
+  "dashboard": {
+    "welcome": "Hoş geldiniz",
+    "placeholder": "Bu bölüm hazırlanıyor. Tam içerik, sınav ve analiz modülleri yakında gelecek.",
+    "role_teacher": "Öğretmen olarak giriş yaptınız.",
+    "role_student": "Öğrenci olarak giriş yaptınız."
+  },
+  "students": {
+    "title": "Öğrenciler",
+    "new": "Öğrenci ekle",
+    "name": "Ad",
+    "surname": "Soyad",
+    "username": "Kullanıcı adı",
+    "empty": "Henüz öğrenci yok.",
+    "key_reveal": "Bu erişim anahtarını hemen kopyalayıp paylaşın. Yalnızca bir kez gösterilir."
+  },
+  "groups": {
+    "title": "Gruplar",
+    "new": "Grup ekle",
+    "name": "Grup adı",
+    "empty": "Henüz grup yok."
+  },
+  "settings": {
+    "title": "Ayarlar",
+    "branding": "Marka",
+    "system_name": "Sistem adı",
+    "short_name": "Kısa ad",
+    "accent": "Vurgu rengi",
+    "save": "Kaydet"
+  },
+  "common": {
+    "loading": "Yükleniyor…",
+    "error": "Bir şeyler ters gitti.",
+    "language": "Dil",
+    "actions": "İşlemler",
+    "cancel": "İptal",
+    "confirm": "Onayla"
+  }
+}

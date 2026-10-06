@@ -1,0 +1,58 @@
+{
+  "nav": {
+    "dashboard": "İdarə paneli",
+    "students": "Şagirdlər",
+    "groups": "Qruplar",
+    "settings": "Parametrlər",
+    "logout": "Çıxış"
+  },
+  "login": {
+    "teacher_tab": "Müəllim",
+    "student_tab": "Şagird",
+    "username": "İstifadəçi adı",
+    "password": "Şifrə",
+    "access_key": "Giriş açarı",
+    "sign_in": "Daxil ol",
+    "recover": "Şifrəni unutdunuz?",
+    "recover_title": "Bir dəfəlik kodla bərpa edin",
+    "recover_code": "Bərpa kodu",
+    "back": "Girişə qayıt"
+  },
+  "dashboard": {
+    "welcome": "Xoş gəldiniz",
+    "placeholder": "Bu bölmə hazırlanır. Tam məzmun, imtahan və analitika modulları gələcək.",
+    "role_teacher": "Müəllim kimi daxil olmusunuz.",
+    "role_student": "Şagird kimi daxil olmusunuz."
+  },
+  "students": {
+    "title": "Şagirdlər",
+    "new": "Şagird əlavə et",
+    "name": "Ad",
+    "surname": "Soyad",
+    "username": "İstifadəçi adı",
+    "empty": "Hələ şagird yoxdur.",
+    "key_reveal": "Bu giriş açarını indi kopyalayıb paylaşın. Yalnız bir dəfə göstərilir."
+  },
+  "groups": {
+    "title": "Qruplar",
+    "new": "Qrup əlavə et",
+    "name": "Qrup adı",
+    "empty": "Hələ qrup yoxdur."
+  },
+  "settings": {
+    "title": "Parametrlər",
+    "branding": "Brendinq",
+    "system_name": "Sistem adı",
+    "short_name": "Qısa ad",
+    "accent": "Vurğu rəngi",
+    "save": "Yadda saxla"
+  },
+  "common": {
+    "loading": "Yüklənir…",
+    "error": "Nəsə səhv baş verdi.",
+    "language": "Dil",
+    "actions": "Əməliyyatlar",
+    "cancel": "Ləğv et",
+    "confirm": "Təsdiqlə"
+  }
+}

@@ -1,0 +1,95 @@
+:root {
+  /* Low-fatigue, mostly white/light UI. Accent is one editable color. */
+  --bg: #ffffff;
+  --surface: #f7f8fa;
+  --border: #e4e7eb;
+  --text: #1a1d21;
+  --text-muted: #6b7280;
+  --accent: #2563eb;
+  --accent-weak: #eef2ff;
+  --danger: #dc2626;
+  --success: #16a34a;
+  --radius: 8px;
+  --maxw: 1100px;
+}
+
+* { box-sizing: border-box; }
+
+html, body, #root { height: 100%; }
+
+body {
+  margin: 0;
+  font-family: Arial, Helvetica, "Segoe UI", sans-serif;
+  color: var(--text);
+  background: var(--bg);
+  font-size: 16px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+h1 { font-size: 1.6rem; margin: 0 0 0.5rem; }
+h2 { font-size: 1.2rem; margin: 1rem 0 0.5rem; }
+
+.container { max-width: var(--maxw); margin: 0 auto; padding: 1rem; }
+
+/* Buttons */
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 0.5rem;
+  padding: 0.6rem 1rem; border-radius: var(--radius);
+  border: 1px solid var(--accent); background: var(--accent); color: #fff;
+  font-size: 1rem; cursor: pointer; min-height: 44px;
+}
+.btn:disabled { opacity: 0.6; cursor: not-allowed; }
+.btn.secondary { background: #fff; color: var(--text); border-color: var(--border); }
+.btn.ghost { background: transparent; border-color: transparent; color: var(--accent); }
+.btn.danger { background: var(--danger); border-color: var(--danger); }
+
+/* Forms */
+.field { margin-bottom: 1rem; }
+.field label { display: block; font-size: 0.9rem; color: var(--text-muted); margin-bottom: 0.3rem; }
+.input {
+  width: 100%; padding: 0.6rem 0.75rem; font-size: 1rem;
+  border: 1px solid var(--border); border-radius: var(--radius); background: #fff;
+}
+.input:focus { outline: 2px solid var(--accent-weak); border-color: var(--accent); }
+
+/* Cards kept minimal on purpose */
+.card { border: 1px solid var(--border); border-radius: var(--radius); padding: 1rem; background: #fff; }
+.stack { display: flex; flex-direction: column; gap: 0.75rem; }
+.row { display: flex; gap: 0.75rem; align-items: center; }
+.spacer { flex: 1; }
+
+.alert.error { color: var(--danger); font-size: 0.9rem; margin: 0.5rem 0; }
+.muted { color: var(--text-muted); }
+.small { font-size: 0.85rem; }
+.mono { font-family: ui-monospace, Menlo, Consolas, monospace; word-break: break-all; }
+
+/* App shell */
+.appbar { border-bottom: 1px solid var(--border); background: #fff; position: sticky; top: 0; z-index: 10; }
+.appbar-inner { max-width: var(--maxw); margin: 0 auto; padding: 0.75rem 1rem; display: flex; align-items: center; gap: 1rem; }
+.brand { font-weight: bold; font-size: 1.05rem; }
+.nav { display: flex; gap: 0.25rem; flex-wrap: wrap; }
+.nav a { padding: 0.5rem 0.7rem; border-radius: var(--radius); color: var(--text-muted); min-height: 44px; display: inline-flex; align-items: center; }
+.nav a.active { background: var(--accent-weak); color: var(--accent); }
+
+/* Tables */
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 0.6rem 0.5rem; border-bottom: 1px solid var(--border); }
+th { color: var(--text-muted); font-size: 0.85rem; font-weight: normal; }
+
+/* Login */
+.login-wrap { min-height: 100vh; display: grid; grid-template-columns: 1fr 1fr; }
+.login-visual { background: var(--surface); display: flex; align-items: center; justify-content: center; padding: 2rem; background-size: cover; background-position: center; }
+.login-form { display: flex; align-items: center; justify-content: center; padding: 2rem; }
+.login-card { width: 100%; max-width: 380px; }
+.tabs { display: flex; gap: 0.25rem; margin-bottom: 1.25rem; background: var(--surface); border-radius: var(--radius); padding: 0.25rem; }
+.tab { flex: 1; text-align: center; padding: 0.5rem; border-radius: 6px; cursor: pointer; color: var(--text-muted); }
+.tab.active { background: #fff; color: var(--text); box-shadow: 0 1px 2px rgba(0,0,0,0.06); }
+
+@media (max-width: 820px) {
+  .login-wrap { grid-template-columns: 1fr; }
+  .login-visual { display: none; }
+}

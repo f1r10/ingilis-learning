@@ -1,0 +1,58 @@
+{
+  "nav": {
+    "dashboard": "Dashboard",
+    "students": "Students",
+    "groups": "Groups",
+    "settings": "Settings",
+    "logout": "Log out"
+  },
+  "login": {
+    "teacher_tab": "Teacher",
+    "student_tab": "Student",
+    "username": "Username",
+    "password": "Password",
+    "access_key": "Access key",
+    "sign_in": "Sign in",
+    "recover": "Lost your password?",
+    "recover_title": "Recover with a one-time code",
+    "recover_code": "Recovery code",
+    "back": "Back to sign in"
+  },
+  "dashboard": {
+    "welcome": "Welcome",
+    "placeholder": "This area is being built. The full content, examination and analytics modules follow.",
+    "role_teacher": "You are signed in as the teacher.",
+    "role_student": "You are signed in as a student."
+  },
+  "students": {
+    "title": "Students",
+    "new": "Add student",
+    "name": "First name",
+    "surname": "Last name",
+    "username": "Username",
+    "empty": "No students yet.",
+    "key_reveal": "Copy and share this access key now. It is shown only once."
+  },
+  "groups": {
+    "title": "Groups",
+    "new": "Add group",
+    "name": "Group name",
+    "empty": "No groups yet."
+  },
+  "settings": {
+    "title": "Settings",
+    "branding": "Branding",
+    "system_name": "System name",
+    "short_name": "Short name",
+    "accent": "Accent color",
+    "save": "Save"
+  },
+  "common": {
+    "loading": "Loading…",
+    "error": "Something went wrong.",
+    "language": "Language",
+    "actions": "Actions",
+    "cancel": "Cancel",
+    "confirm": "Confirm"
+  }
+}
