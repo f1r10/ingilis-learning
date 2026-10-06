@@ -113,9 +113,15 @@ def test_upgrade_renders_every_table_once(upgrade_sql: str, app_metadata: MetaDa
 
 
 def test_rendered_statement_counts_match_the_schema(
-    upgrade_sql: str, app_metadata: MetaData
+    upgrade_sql: str, app_metadata: MetaData, cumulative_meta: MetaData
 ) -> None:
-    """Exact counts, tied to the model schema - not a vague 'roughly 45'."""
+    """Exact counts, tied to the model schema - not a vague 'roughly 45'.
+
+    The three views must agree: what `alembic upgrade head --sql` renders, what the
+    revision chain replays into a MetaData, and what the models declare. A number is
+    still asserted, but as a floor, so a granular later revision moves the schema
+    rather than this test.
+    """
     tables = [t for t, _ in _TABLE_BLOCK_RE.findall(upgrade_sql) if t != "alembic_version"]
     indexes = _INDEX_RE.findall(upgrade_sql)
     fks = _FK_RE.findall("".join(b for _, b in _TABLE_BLOCK_RE.findall(upgrade_sql)))
@@ -128,8 +134,13 @@ def test_rendered_statement_counts_match_the_schema(
         for c in t.constraints
         if type(c).__name__ == "UniqueConstraint"
     )
-    assert len(tables) == len(app_metadata.tables) == 45
-    assert len(indexes) == sum(len(t.indexes) for t in app_metadata.tables.values()) == 90
+    assert len(tables) == len(app_metadata.tables) == len(cumulative_meta.tables) >= 45
+    assert (
+        len(indexes)
+        == sum(len(t.indexes) for t in app_metadata.tables.values())
+        == len(index_tuples(cumulative_meta))
+        >= 90
+    )
     assert len(fks) == sum(len(t.foreign_key_constraints) for t in app_metadata.tables.values())
     assert len(uniques) == orm_uniques >= 2
     assert len(pks) == len(app_metadata.tables) + 1, (
@@ -188,3 +199,23 @@ def test_offline_sql_is_pure_ddl(upgrade_sql: str) -> None:
     assert "0001_bootstrap" in upgrade_sql
     assert "gen_random_uuid()" in upgrade_sql, "UUID server default failed to render"
     assert "session_epoch" in upgrade_sql, "admin_user.session_epoch missing from rendered DDL"
+
+
+def test_every_committed_revision_appears_in_the_rendered_chain(
+    upgrade_sql: str, downgrade_sql: str
+) -> None:
+    """`upgrade head --sql` must be the whole history, revision by revision.
+
+    A second revision that only existed on disk but never rendered would still leave
+    the bootstrap comparisons green, so each one is pinned here: its version stamp,
+    and the DDL it is responsible for.
+    """
+    from migration_replay import chain_paths, revision_identifiers
+
+    for path in chain_paths():
+        revision, _down = revision_identifiers(path)
+        assert revision in upgrade_sql, f"{path.name} never stamps alembic_version"
+
+    assert "CREATE UNIQUE INDEX uq_vocabulary_word_language ON vocabulary_entry" in upgrade_sql
+    assert "WHERE deleted_at IS NULL" in upgrade_sql
+    assert "DROP INDEX uq_vocabulary_word_language" in downgrade_sql

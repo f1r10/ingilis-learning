@@ -78,6 +78,7 @@ export interface Tag {
   name: string;
   color: string | null;
   question_count: number;
+  vocabulary_count: number;
 }
 
 export interface Page<T> {

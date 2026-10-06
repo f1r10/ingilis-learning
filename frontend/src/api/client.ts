@@ -17,10 +17,13 @@ function readCookie(name: string): string | undefined {
 export class ApiError extends Error {
   code: string;
   status: number;
-  constructor(status: number, code: string, message: string) {
+  /** Field paths the server named in a 422, so the teacher learns which box to fix. */
+  fields: string[];
+  constructor(status: number, code: string, message: string, fields: string[] = []) {
     super(message);
     this.status = status;
     this.code = code;
+    this.fields = fields;
   }
 }
 
@@ -49,9 +52,24 @@ async function request<T>(
 
   if (!resp.ok) {
     const err = data?.error || {};
-    throw new ApiError(resp.status, err.code || "error", err.message || resp.statusText);
+    const fields = fieldNames(err.fields);
+    const base = err.message || resp.statusText;
+    throw new ApiError(resp.status, err.code || "error", fields.length ? `${base} (${fields.join(", ")})` : base, fields);
   }
   return data as T;
+}
+
+/** `["body","translations",0,"id"]` becomes `translations.id`: the part a teacher can act on. */
+function fieldNames(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  const names = raw.map((item) => {
+    const loc = (item as any)?.loc;
+    if (!Array.isArray(loc)) return "";
+    return loc
+      .filter((part) => part !== "body" && !/^\d+$/.test(String(part)))
+      .join(".");
+  });
+  return Array.from(new Set(names.filter(Boolean)));
 }
 
 export const api = {

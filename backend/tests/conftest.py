@@ -46,3 +46,19 @@ def migration_meta():
     from migration_replay import replay_upgrade
 
     return replay_upgrade().metadata
+
+
+@pytest.fixture(scope="session")
+def cumulative_meta():
+    """Schema after the *whole* committed revision chain.
+
+    The ORM comparison has to be made against this, not against bootstrap alone:
+    once `0002` exists, a model that matches the migrations would look like drift in
+    the bootstrap-only view, and the honest fix is to replay further, not to delete
+    the guard.
+    """
+    from migration_replay import replay_chain
+
+    result = replay_chain()
+    assert not result.unexpected, f"a revision built schema the recorder cannot follow: {result.unexpected}"
+    return result.metadata

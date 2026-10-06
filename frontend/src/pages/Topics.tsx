@@ -1,6 +1,7 @@
 // The filing system: the topic tree and the flat tags that sit beside it.
 // Nothing here pretends a deletion is safe - the server refuses to remove a topic
-// or a tag that questions still carry, and the reason is shown as it arrives.
+// or a tag that questions or word entries still carry, and the reason is shown as it
+// arrives.
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
@@ -74,7 +75,7 @@ export default function Topics() {
             {(tags.data?.items || []).map((tag) => (
               <span className="chip" key={tag.id}>
                 {tag.name}
-                <span className="small muted"> · {tag.question_count}</span>
+                <span className="small muted"> · {t("topics.tag_counts", { questions: tag.question_count, words: tag.vocabulary_count })}</span>
                 <button
                   type="button"
                   className="chip-x"

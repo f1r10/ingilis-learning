@@ -24,6 +24,7 @@ from sqlalchemy import (
     String,
     Table,
     Text,
+    text,
 )
 from sqlalchemy import (
     Enum as SAEnum,
@@ -313,6 +314,19 @@ class VocabularyEntry(UUIDPrimaryKeyMixin, TimestampMixin, SoftDeleteMixin, Base
         back_populates="entry", cascade="all, delete-orphan"
     )
     tags: Mapped[list["Tag"]] = relationship(secondary="vocabulary_tag")
+
+    __table_args__ = (
+        # One live entry per word per learning language (migration 0002). A teacher
+        # editing by hand and the Phase 8 importer can reach the same word at the
+        # same moment, and only the database can see the other one.
+        Index(
+            "uq_vocabulary_word_language",
+            "word",
+            "learning_language",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+    )
 
 
 class VocabularyTranslation(UUIDPrimaryKeyMixin, TimestampMixin, Base):

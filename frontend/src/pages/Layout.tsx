@@ -30,11 +30,15 @@ export default function Layout() {
                 <NavLink to="/students" className={({ isActive }) => (isActive ? "active" : "")}>{t("nav.students")}</NavLink>
                 <NavLink to="/groups" className={({ isActive }) => (isActive ? "active" : "")}>{t("nav.groups")}</NavLink>
                 <NavLink to="/questions" className={({ isActive }) => (isActive ? "active" : "")}>{t("nav.questions")}</NavLink>
+                <NavLink to="/vocabulary" className={({ isActive }) => (isActive ? "active" : "")}>{t("nav.vocabulary")}</NavLink>
                 <NavLink to="/topics" className={({ isActive }) => (isActive ? "active" : "")}>{t("nav.topics")}</NavLink>
                 <NavLink to="/settings" className={({ isActive }) => (isActive ? "active" : "")}>{t("nav.settings")}</NavLink>
               </>
             ) : (
-              <NavLink to="/student" className={({ isActive }) => (isActive ? "active" : "")}>{t("nav.dashboard")}</NavLink>
+              <>
+                <NavLink to="/student" className={({ isActive }) => (isActive ? "active" : "")}>{t("nav.dashboard")}</NavLink>
+                <NavLink to="/student/vocabulary" className={({ isActive }) => (isActive ? "active" : "")}>{t("nav.vocabulary")}</NavLink>
+              </>
             )}
           </nav>
           <span className="spacer" />

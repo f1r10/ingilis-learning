@@ -13,6 +13,7 @@ from app.api.v1.endpoints import (
     students,
     tags,
     topics,
+    vocabulary,
 )
 
 api_router = APIRouter()
@@ -25,3 +26,5 @@ api_router.include_router(settings.router)
 api_router.include_router(questions.router)
 api_router.include_router(topics.router)
 api_router.include_router(tags.router)
+api_router.include_router(vocabulary.router)
+api_router.include_router(vocabulary.student_router)

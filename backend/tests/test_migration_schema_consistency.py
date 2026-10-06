@@ -1,4 +1,4 @@
-"""Schema-drift guard: the frozen bootstrap revision must equal the ORM schema.
+"""Schema-drift guard: the committed migrations must equal the ORM schema.
 
 Phase 1-2 hardening requirement: the initial migration can no longer build its
 schema at runtime from ``Base.metadata``. That makes the historical schema
@@ -7,6 +7,14 @@ revision's literal DDL into a synthetic MetaData and compare *structures*, not
 table counts: table names, column names, compiled PostgreSQL types, nullability,
 string widths, server defaults, primary keys, foreign keys (incl. ON DELETE),
 unique constraints and indexes (incl. uniqueness and column order).
+
+Two views are compared on purpose:
+
+* ``migration_meta`` is bootstrap alone, and it stays pinned to the schema
+  bootstrap was written for. Nothing after it may change that history.
+* ``cumulative_meta`` is the whole revision chain, and it is what the models are
+  measured against. A granular ``0002`` therefore has to be replayed, not ignored -
+  the guard cannot be satisfied by leaving a migration unapplied in the comparison.
 """
 from __future__ import annotations
 
@@ -30,28 +38,28 @@ def test_revision_file_exists() -> None:
 
 
 def test_table_names_match_metadata_exactly(
-    migration_meta: MetaData, app_metadata: MetaData
+    cumulative_meta: MetaData, app_metadata: MetaData
 ) -> None:
-    mig, orm = set(migration_meta.tables), set(app_metadata.tables)
+    mig, orm = set(cumulative_meta.tables), set(app_metadata.tables)
     assert mig == orm, (
-        f"migration creates tables the models do not have: {sorted(mig - orm)}; "
-        f"models have tables the migration never creates: {sorted(orm - mig)}"
+        f"migrations create tables the models do not have: {sorted(mig - orm)}; "
+        f"models have tables the migrations never create: {sorted(orm - mig)}"
     )
-    assert len(mig) == len(orm) == 45
+    assert len(mig) == len(orm) >= 45
 
 
 def test_columns_types_nullability_widths_and_defaults_match(
-    migration_meta: MetaData, app_metadata: MetaData
+    cumulative_meta: MetaData, app_metadata: MetaData
 ) -> None:
-    mig, orm = column_specs(migration_meta), column_specs(app_metadata)
+    mig, orm = column_specs(cumulative_meta), column_specs(app_metadata)
     problems: list[str] = []
     for table in sorted(set(mig) | set(orm)):
         mig_cols = mig.get(table, {})
         orm_cols = orm.get(table, {})
         for missing in sorted(set(orm_cols) - set(mig_cols)):
-            problems.append(f"{table}.{missing}: present in models, absent in migration")
+            problems.append(f"{table}.{missing}: present in models, absent in migrations")
         for extra in sorted(set(mig_cols) - set(orm_cols)):
-            problems.append(f"{table}.{extra}: created by migration, absent in models")
+            problems.append(f"{table}.{extra}: created by migrations, absent in models")
         for col in sorted(set(mig_cols) & set(orm_cols)):
             if mig_cols[col] != orm_cols[col]:
                 problems.append(
@@ -63,28 +71,28 @@ def test_columns_types_nullability_widths_and_defaults_match(
     assert sum(len(cols) for cols in mig.values()) == sum(len(cols) for cols in orm.values()) >= 400
 
 
-def test_primary_keys_match(migration_meta: MetaData, app_metadata: MetaData) -> None:
-    mig, orm = pk_tuples(migration_meta), pk_tuples(app_metadata)
+def test_primary_keys_match(cumulative_meta: MetaData, app_metadata: MetaData) -> None:
+    mig, orm = pk_tuples(cumulative_meta), pk_tuples(app_metadata)
     diff = {t: (sorted(mig[t]), sorted(orm[t])) for t in mig if mig.get(t) != orm.get(t)}
     assert not diff, f"primary key drift: {diff}"
     assert all(mig[t] for t in mig), "a table has no primary key"
 
 
 def test_foreign_keys_match_including_ondelete(
-    migration_meta: MetaData, app_metadata: MetaData
+    cumulative_meta: MetaData, app_metadata: MetaData
 ) -> None:
-    mig, orm = fk_tuples(migration_meta), fk_tuples(app_metadata)
+    mig, orm = fk_tuples(cumulative_meta), fk_tuples(app_metadata)
     assert mig == orm, (
         f"FKs only in models: {sorted(str(f) for f in orm - mig)}\n"
-        f"FKs only in migration: {sorted(str(f) for f in mig - orm)}"
+        f"FKs only in migrations: {sorted(str(f) for f in mig - orm)}"
     )
     assert len(mig) >= 50, "FK comparison looks vacuous"
     # every FK in this schema must declare an explicit delete rule
     assert all(fk[4] for fk in mig), f"FKs without ON DELETE: {[f for f in mig if not f[4]]}"
 
 
-def test_unique_constraints_match(migration_meta: MetaData, app_metadata: MetaData) -> None:
-    mig, orm = unique_tuples(migration_meta), unique_tuples(app_metadata)
+def test_unique_constraints_match(cumulative_meta: MetaData, app_metadata: MetaData) -> None:
+    mig, orm = unique_tuples(cumulative_meta), unique_tuples(app_metadata)
     assert mig == orm, (
         f"unique constraint drift: only-migration={sorted(map(str, mig - orm))} "
         f"only-models={sorted(map(str, orm - mig))}"
@@ -92,16 +100,34 @@ def test_unique_constraints_match(migration_meta: MetaData, app_metadata: MetaDa
 
 
 def test_indexes_match_including_uniqueness_and_order(
-    migration_meta: MetaData, app_metadata: MetaData
+    cumulative_meta: MetaData, app_metadata: MetaData
 ) -> None:
-    mig, orm = index_tuples(migration_meta), index_tuples(app_metadata)
+    mig, orm = index_tuples(cumulative_meta), index_tuples(app_metadata)
     assert set(mig) == set(orm), (
-        f"indexes only in migration: {sorted(set(mig) - set(orm))}\n"
+        f"indexes only in migrations: {sorted(set(mig) - set(orm))}\n"
         f"indexes only in models: {sorted(set(orm) - set(mig))}"
     )
     mismatched = {k: (mig[k], orm[k]) for k in mig if mig[k] != orm[k]}
     assert not mismatched, f"index definition drift: {mismatched}"
     assert len(mig) >= 80
+
+
+def test_every_extra_index_after_bootstrap_is_declared_by_a_model(
+    migration_meta: MetaData, cumulative_meta: MetaData, app_metadata: MetaData
+) -> None:
+    """Revisions after bootstrap add exactly what the models declare.
+
+    This is the counterpart of the guard above, aimed at the new situation: a later
+    migration that silently creates something no model knows about would otherwise
+    only be visible as a missing index on the *next* comparison.
+    """
+    added = set(index_tuples(cumulative_meta)) - set(index_tuples(migration_meta))
+    orm_only = set(index_tuples(app_metadata)) - set(index_tuples(migration_meta))
+    assert added == orm_only, (
+        f"created by later revisions but not declared: {sorted(added - orm_only)}; "
+        f"declared but never created: {sorted(orm_only - added)}"
+    )
+    assert "uq_vocabulary_word_language" in added, "Phase 4 must add the vocabulary word index"
 
 
 def test_downgrade_drops_every_created_table(migration_meta: MetaData) -> None:
@@ -122,19 +148,21 @@ def test_replay_is_self_contained_and_complete() -> None:
     assert set(result.created_tables) == set(result.metadata.tables)
     assert len(result.created_tables) == len(result.metadata.tables) == 45
     assert len(result.created_indexes) == 90
+    # bootstrap creates the schema; it never takes an index back
+    assert result.dropped_indexes == []
 
 
 @pytest.mark.parametrize("drift_kind", ["column", "type", "index"])
 def test_comparison_logic_detects_injected_drift(
-    migration_meta: MetaData, drift_kind: str
+    cumulative_meta: MetaData, drift_kind: str
 ) -> None:
     """Negative control: mutate a copy of the replayed schema and confirm the
     comparison helpers report a difference, so a green suite is meaningful."""
     import copy
 
-    mutated = copy.deepcopy(migration_meta)
-    baseline_specs = column_specs(migration_meta)
-    baseline_indexes = index_tuples(migration_meta)
+    mutated = copy.deepcopy(cumulative_meta)
+    baseline_specs = column_specs(cumulative_meta)
+    baseline_indexes = index_tuples(cumulative_meta)
 
     if drift_kind == "column":
         mutated.tables["tag"].append_column(sa.Column("injected", sa.Text()))

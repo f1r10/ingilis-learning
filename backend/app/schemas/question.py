@@ -207,3 +207,4 @@ class TagRead(BaseModel):
     name: str
     color: str | None
     question_count: int = 0
+    vocabulary_count: int = 0

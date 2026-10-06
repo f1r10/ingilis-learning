@@ -12,12 +12,21 @@ from __future__ import annotations
 
 from copy import deepcopy
 
+import pytest
 import sqlalchemy as sa
-from migration_replay import fk_tuples, index_tuples, unique_tuples
+from migration_replay import (
+    chain_paths,
+    fk_tuples,
+    index_tuples,
+    revision_identifiers,
+    unique_tuples,
+)
 from sqlalchemy import inspect, text
 from sqlalchemy.dialects import postgresql
+from sqlalchemy.exc import IntegrityError
 
 from app.core.database import SessionLocal
+from app.models.content import VocabularyEntry
 
 _PG = postgresql.dialect()
 # The application's objects all live in one schema. Comparing against
@@ -187,7 +196,7 @@ async def test_indexes_exist_are_unique_where_declared_and_ordered(db_ready, app
         f"only models={sorted(set(expected) - set(live))} "
         f"differing={sorted(k for k in set(live) & set(expected) if live[k] != expected[k])}"
     )
-    assert len(live) >= 89, f"expected every declared index, found {len(live)}"
+    assert len(live) >= 91, f"expected every declared index, found {len(live)}"
 
     partial = {name for _t, name, _u, is_partial, _c in rows if is_partial}
     expected_partial = {
@@ -195,7 +204,10 @@ async def test_indexes_exist_are_unique_where_declared_and_ordered(db_ready, app
         for name, (_t, _c, _u, predicate) in index_tuples(app_metadata).items()
         if predicate
     }
-    assert partial == expected_partial == {"uq_student_access_key_active"}
+    assert partial == expected_partial == {
+        "uq_student_access_key_active",
+        "uq_vocabulary_word_language",
+    }
 
 
 async def test_the_one_active_key_index_really_is_partial_and_unique(db_ready):
@@ -211,6 +223,67 @@ async def test_the_one_active_key_index_really_is_partial_and_unique(db_ready):
     assert "UNIQUE" in definition.upper(), definition
     assert "WHERE" in definition.upper(), definition
     assert "status" in definition and "ACTIVE" in definition, definition
+
+
+async def test_the_vocabulary_word_index_rejects_a_live_duplicate_and_forgives_trash(
+    db_ready,
+):
+    """The Phase 4 rule the service cannot enforce on its own.
+
+    Two concurrent writers - a teacher and the Phase 8 importer - can each confirm the
+    word is absent and then both insert it. Only the database sees both statements, so
+    this checks that the real index does its job: a duplicate of a live row fails, the
+    same word in another learning language is a different word, and a trashed row
+    frees the word again, which is what makes soft delete and restore possible at all.
+
+    Every statement runs in one transaction with savepoints, so a rejected insert
+    cannot wipe out the row it collided with.
+    """
+    async with SessionLocal() as db:
+        db.add(
+            VocabularyEntry(
+                word="improve", learning_language="en", definition="to make better"
+            )
+        )
+        await db.flush()
+
+        with pytest.raises(IntegrityError):
+            async with db.begin_nested():
+                db.add(
+                    VocabularyEntry(
+                        word="improve", learning_language="en", definition="a second copy"
+                    )
+                )
+                await db.flush()
+
+        # A different learning language is a different word: the index pairs both
+        # columns so an English entry never blocks the Turkish one.
+        db.add(VocabularyEntry(word="improve", learning_language="az", definition="fərqli"))
+        await db.flush()
+
+        assert await _live_count(db, "en") == 1
+
+        # Trash releases the word: the index is partial, not total.
+        await db.execute(text("UPDATE vocabulary_entry SET deleted_at = now() WHERE learning_language = 'en'"))
+        await db.flush()
+        db.add(VocabularyEntry(word="improve", learning_language="en", definition="a replacement"))
+        await db.flush()
+
+        assert await _live_count(db, "en") == 1
+        assert await _live_count(db, "az") == 1
+        await db.rollback()
+
+
+async def _live_count(db, learning_language: str) -> int:
+    return (
+        await db.execute(
+            text(
+                "SELECT count(*) FROM vocabulary_entry "
+                "WHERE learning_language = :lang AND deleted_at IS NULL"
+            ),
+            {"lang": learning_language},
+        )
+    ).scalar_one()
 
 
 async def test_enum_columns_are_varchar_without_check_constraints_or_native_types(db_ready):
@@ -274,10 +347,16 @@ async def test_security_relevant_server_defaults_are_present(db_ready):
 
 
 async def test_the_schema_came_from_the_committed_migration(db_ready):
-    """alembic_version must name the bootstrap revision, not a create_all() side effect."""
+    """alembic_version must name the head of the committed chain, not a create_all() side effect.
+
+    Read from the revision files rather than hard-coded, so a phase that adds
+    migration `0003` gets a live check that its DDL actually ran instead of a test
+    that quietly keeps asserting the bootstrap stamp.
+    """
+    head, _down = revision_identifiers(chain_paths()[-1])
     async with SessionLocal() as db:
         version = (await db.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
-    assert version == "0001_bootstrap"
+    assert version == head, f"the database is at {version}, the committed chain ends at {head}"
 
     async with SessionLocal() as db:
         username_index = (

@@ -370,7 +370,15 @@ async def test_renaming_a_tag_cannot_collide_with_another(client):
 
     renamed = await client.patch(f"/api/v1/tags/{other['id']}", json={"name": "irregular", "color": "blue"})
     assert renamed.status_code == 200, renamed.text
-    assert renamed.json() == {"id": other["id"], "name": "irregular", "color": "blue", "question_count": 0}
+    # Both banks report their own count: a tag left over from the word bank is cleaned
+    # up in a different screen than one left over from the question bank.
+    assert renamed.json() == {
+        "id": other["id"],
+        "name": "irregular",
+        "color": "blue",
+        "question_count": 0,
+        "vocabulary_count": 0,
+    }
     # Re-sending a tag's own name is not a collision with itself.
     same = await client.patch(f"/api/v1/tags/{kept['id']}", json={"name": "past"})
     assert same.status_code == 200

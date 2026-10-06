@@ -3,11 +3,12 @@
 Continuation state file. Reread this after any context loss and keep going - do not
 re-plan work that is already recorded as done here.
 
-- Current phase: **Phase 4 - vocabulary module** (Phases 1-2 and 3 accepted)
+- Current phase: **Phase 5 - reading, listening and media** (Phases 1-4 accepted)
 - Git: branch `main`, remote `https://github.com/f1r10/ingilis-learning.git`
-- Last commits: `2ab3294 chore: complete phase 1-2 acceptance hardening` (pushed),
-  then the Phase 3 commit made by this change - `git rev-parse HEAD` after it is the
-  authoritative value for this line, and the next phase must rewrite it
+- Last commits: Phase 1-2 `2ab3294`, Phase 3 `c650bf5 feat(phase-3): complete question
+  bank and question engine`, Phase 4 `feat(phase-4): complete vocabulary module` - all
+  pushed. `git rev-parse HEAD` is the authoritative tip; the Phase 5 commit must rewrite
+  this line with its own SHA
 
 ---
 
@@ -65,8 +66,8 @@ language, never developer jargon. Heavy operations run in the worker.
 | --- | --- | --- |
 | 1-2 | Foundation: infra, identity, students, groups, settings/branding, security, migrations, tests, acceptance gate | **accepted - `verify_phase12.sh` exit 0, 13/13 steps, 0 mandatory skips** |
 | 3 | Question bank + full question engine (all types, `QuestionVersion` immutability) | **accepted - `verify_phase12.sh` exit 0, 13/13 steps, 0 mandatory skips** |
-| 4 | Vocabulary module | **in progress** |
-| 5 | Reading + listening + media libraries (object storage) | not started |
+| 4 | Vocabulary module | **accepted - `verify_phase12.sh` exit 0, 13/13 steps, 0 mandatory skips, live browser click-through on teacher and learner screens** |
+| 5 | Reading + listening + media libraries (object storage) | not started - **next** |
 | 6 | Catalogs + practice | not started |
 | 7 | Exams + assignments + attempt engine + grading | not started |
 | 8 | Document import + review pipeline | not started |
@@ -200,7 +201,113 @@ routes `/questions`, `/questions/new`, `/questions/:id`, `/topics` and az/en/ru/
 - `npm install` in the frontend image reports 4 vulnerabilities (3 moderate, 1 high)
   in the dependency tree - a Phase 13 hardening item.
 
-## 5. Working commands
+## 5. Phase 4 - vocabulary bank + study cards
+
+Backend: `app/services/vocabulary_service.py` (create/patch with whole-set child
+replacement, the duplicate-word rule in four spellings, status lifecycle, trash/restore
+with a restore-time collision refusal, shared `_summary`/`to_read` payloads, list with
+10 filters + sort + pagination for the teacher and a narrower read-only surface for the
+learner, `learner_view` as the single study-card projection, per-id bulk with one audit
+row for the operation) and `app/api/v1/endpoints/vocabulary.py` (two routers: `/vocabulary`
+teacher, `/student/vocabulary` learner; `/meta` and `/bulk` declared before `/{entry_id}`
+so a literal path is never parsed as a UUID).
+
+Migration: `0002_vocabulary_word_unique` - partial unique index
+`uq_vocabulary_word_language (word, learning_language) WHERE deleted_at IS NULL`, with a
+working downgrade, verified by the replay guard (`expected_partial` set), the offline DDL
+count test and a live downgrade/upgrade round trip in the acceptance gate. `0001_bootstrap`
+was not touched.
+
+Rules that are now contractual: TRASH is `deleted_at`, never a status; a trashed word keeps
+its status, children and tag links (a restore must be exact, and a binned word still
+occupies its tag); `PATCH /vocabulary/{id}` is `extra="forbid"`, so a body that tried to set
+`status` gets 409-proof honesty rather than a 200 lie; a learner's search is pinned to
+`q_kind=word_only` so list search can never match `notes`; a self-translation is refused
+before the "not an enabled language" message, because that is the mistake the teacher
+actually made; tags carry `{question_count, vocabulary_count}` and refuse deletion while
+either bank references them.
+
+Frontend (no redesign): `api/vocabulary.ts`, `pages/Vocabulary.tsx` (teacher bank: filters
+incl. search kind, trash view, bulk toolbar with per-id refusals), `pages/VocabularyEditor.tsx`
+(all fields, meanings per language, examples with their own translation, synonym/antonym
+chips, lifecycle block, live learner preview), `components/StudentCard.tsx` (one card
+component used by the teacher preview and the student screen), `pages/StudentVocabulary.tsx`
+(learner list + card), routes `/vocabulary`, `/vocabulary/new`, `/vocabulary/:id`,
+`/student/vocabulary`, nav entries, and az/en/ru/tr copy (300 keys per locale, verified
+key-identical and every `t()` literal resolved).
+
+### Defects found in this phase and fixed at the root
+
+| Defect | Fix |
+| --- | --- |
+| Any `PATCH` carrying `translations` or `examples` returned 500 (`'dict' object has no attribute 'language'`) | `update_entry` read the children out of `payload.model_dump(exclude_unset=True)`, which flattens nested pydantic models to dicts, while every child rule reads them as rows; it now uses `payload.translations` / `payload.examples` (validated models) or the ORM rows already in the database |
+| A learner searching the word list could match the teacher's private `notes` | `list_for_learner` pins `q_kind="word_only"`; pinned by a sentinel-note test that searches for it and gets nothing back |
+| A `PATCH` body containing `status` answered 200 having changed nothing | `VocabularyUpdate` is `extra="forbid"`; the lifecycle endpoint is the only door to a status |
+| A self-translation (`az` word translated into `az`) reported "not an enabled language" and hid the real mistake | the self-language check runs first in `_check_language` |
+| A trashed word released its tag in the UI's counting model | both `_counts` (questions) and `_vocabulary_counts` (words) count every link row including soft-deleted ones, matching the Phase 3 rule; `TagRead` gained `vocabulary_count` and the refusal names both banks |
+| The edit endpoint and the taxonomy decorator were merged onto one line by an insertion (`...response_model=None)async def assign_taxonomy(`) - the app would not import | caught by `python -c "import app.main"` + ruff before any test ran; the decorator/def pair restored |
+| The learner page called `/vocabulary/meta`, an admin endpoint, so its own filter pickers would 401 | added `GET /student/vocabulary/meta` (declared before `/{entry_id}`, narrower payload: no statuses, no word types) and pointed the page at it |
+| Three integration expectations were wrong while the product was right | the seed's inherited child rows and levels, the disabled-learner path (the API ends sessions, so 401 is the honest answer and the 403 branch needs a direct column write), and the bulk audit (filed for the operation with no `target_id`) - each test now asserts what the system actually guarantees |
+| The editor printed the lifecycle explanation twice on a new word and printed an empty status chip next to it | the hint is create-only and the chip only renders when there is an id |
+| A new word could only ever be born a draft, so publishing one meant save, then a second trip to the lifecycle endpoint | the create form carries its own initial-status picker, restricted to the states a word can *enter* (`draft`, `ready`) - archived and trash are not doors in |
+| "Add a language" always opened on the first enabled translation language, so a second meaning hit the duplicate-language rule on save | it opens on the first language that is still free, and disables once every language has a meaning |
+| The bulk level button was derived from the *filter* level, which made it dead in the normal case (no filter) and a no-op in the filtered one | its own picker with a placeholder, `Set the level to X`, and a separate `Remove the level` - which is `set_level` with an empty level, the way the API already documents unsetting one |
+| Both dashboards showed future modules as if they were buttons, next to a "placeholder" sentence | the tiles are real links to the screens that exist, and the copy tells a teacher and a student what they can actually do now |
+| Azerbaijani rendered the status names as verbs ("Layihə", "Arxivləmiş") and `questions.context_independent` was an empty string in all four locales, so the label rendered blank | corrected to "Qaralama"/"Arxivlənmiş" and real terms in az/en/ru/tr; a new offline test now fails on any blank value anywhere in the locales |
+| A `//` comment was written *inside* the JSX children of the bulk toolbar, so React rendered it as visible text on the teacher's screen (`tsc` cannot catch this - a `//` line is legal JSX text) | moved it into a `{/* … */}` comment, then swept every `.tsx` in the app for a comment line sitting next to JSX: this was the only one |
+| The create-time status picker filtered out a `"trash"` status that `/vocabulary/meta` can never return (`SETTABLE_STATUSES` is draft/ready/archived, and the service refuses `trash` as a status) | filter on `archived` alone, which is the state a word genuinely cannot enter through |
+| The gate's own new round-trip step failed on its first live run: `duplicate = await conn.execute(...).scalars().all()` does **not** await the `execute` - `await` binds looser than the attribute chain, so Python awaited the chain, never ran the statement, and the check that was supposed to prove the rebuilt index works had proved nothing | `(await conn.execute(...)).scalars().all()`. Proven in both directions against the real index before re-running the gate: the fixed form returns 0 duplicate ids, the old form raises the exact `'coroutine' object has no attribute 'scalars'` the gate reported |
+| The same step asserted `"WHERE deleted_at IS NULL" in indexdef`, but Postgres stores the predicate as its own text - `WHERE (deleted_at IS NULL)`, parenthesised - so the assertion would have failed even with the `await` fixed | compare a normalised form (parentheses and whitespace folded, lower-cased) instead of the migration's literal spelling, and the check still proves the partial-index predicate survived the rebuild |
+
+### Localisation contract (new in this phase)
+
+`backend/tests/test_frontend_i18n_contract.py` (5 offline tests) flattens the four locale
+files and asserts: identical key sets, **no blank value**, every `t("literal")` in the
+frontend source exists, every dynamic family (`t(\`status.${x}\`)`) has at least one key,
+and the language menu in `i18n/index.ts` offers exactly the locales that are shipped. A
+missing frontend tree is a failure, never a skip.
+
+### Evidence
+
+- `bash scripts/verify_phase12.sh` -> **exit 0**, `passed steps: 13 / 13`,
+  unit/static **201 passed**, integration (Postgres+Redis+MinIO) **196 passed**,
+  MinIO round trip **8 passed**, `0 failed | 0 errors | 0 skipped` in all three.
+  Step 8 now also does the Phase 3 -> Phase 4 transition for real: `downgrade
+  0001_bootstrap` (proving only the word index disappears and the table and its columns
+  stay), a committed row staged underneath, then `upgrade head` rebuilding the index over
+  that row and refusing a second live copy of it.
+  The exit status is read from inside a script file, because a `$?` typed through the
+  Windows side is expanded before WSL sees it - an earlier "the gate exits 0 while
+  reporting failure" reading was that artifact, not the gate.
+- `ruff check app tests migrations scripts` clean; `python -c "import app.main"` clean
+- offline half on its own: **201 passed** (4.2s), which includes the 5 new locale tests
+- the **whole suite against the running stack** (PostgreSQL + Redis + MinIO):
+  **397 passed, 0 failed, 0 errors, 0 skipped** in 22m58s. With MinIO up the object
+  storage round trip ran for real instead of skipping, so nothing in this phase quietly
+  did nothing. Offline 201 + live-only integration 196 = 397.
+- `docker build frontend` (the shipped `node:20-alpine` stage, `tsc -b && vite build`)
+  green, and the built bundle contains the Phase 4 calls - rebuilt once more after the
+  last two edits (the JSX comment and the status filter), because those changed source
+  the first build had not seen
+- **real browser click-through** on the compose stack (api + nginx frontend, same-origin
+  `/api/v1`) as a teacher session in Azerbaijani, plus the learner screen. To avoid ever
+  printing a developer credential, the run used a separate throwaway compose project
+  (`-p llp_ui`) on auto-chosen ports with its own scratch admin/learner accounts, created
+  for this verification and torn down with it; the developer stack and its volumes were
+  never touched. Confirmed in the live UI: a new word created with two meanings and two
+  examples; the duplicate-word rule surfacing the backend's 409 as a message on the field;
+  the language picker refusing to open a third meaning on an already-used language; a
+  draft staying invisible to the learner until it is published; the learner search box
+  returning nothing for a phrase that exists only in the teacher's private note; the
+  teacher's preview card being the same component the learner gets; trash and restore
+  moving the learner's visible count; the bulk toolbar applying status / trash / restore
+  / `set level` / `remove the level` per id, and the level round-trip verified as
+  `C1, C1, C1 -> —, —, —` through the real endpoint. No console errors, and no request
+  outside 200/201 or a deliberate 4xx.
+  Screenshots are not available in this browser surface, so the evidence is structural
+  (accessibility snapshots and DOM reads), not pixel-level.
+
+## 6. Working commands
 
 ```bash
 # mandatory acceptance (WSL / Linux / macOS / Windows; needs Docker, no make)
@@ -231,24 +338,50 @@ bash state does not persist between commands, so `cd` in every command.
 WSL path for the same repo: `/mnt/c/Users/firon/Documents/Qoder/2026-10-06/1438da7f`
 (run with `wsl -e bash -lc '...'`).
 
-## 6. Environment facts worth not re-discovering
+## 7. Environment facts worth not re-discovering
 
 - WSL Ubuntu: Docker 29.1.3 + Compose 2.40.3 working, internet reachable,
   `python3` = 3.14.4 with **no pip/ensurepip** (venv needs the pip bootstrap), no
   `make` on the Windows PATH.
 - Invoking WSL from Git Bash: `wsl.exe -- bash -lc '...'` (a bare `wsl -lc` is rejected);
-  never hand `/mnt/...` paths to `wsl.exe` as arguments (MSYS rewrites them) and never
-  measure an exit status through nested double quotes - `bash -c "exit 3"` arrives as
-  `bash -c exit 3`, and the status you read is the wrapper's. bash 5.3.9 itself is fine.
-  Run a script file and have the script write `$?` to a file.
-- No MinIO container in the dev stack; the acceptance MinIO comes from the pinned
-  Chainguard community image.
+  never hand `/mnt/...` paths to `wsl.exe` as arguments (MSYS rewrites them).
+- **A `$` inside that single-quoted body is still expanded by the Windows-side shell.**
+  `echo "GATE_EXIT=$?"` therefore reports the status of some earlier command, not the
+  thing that just ran - which is how a gate that had clearly failed looked like it exited
+  0. Loops, substitutions and anything whose value matters go into a literal script file
+  under `C:\Users\firon\AppData\Local\Temp`, run as
+  `wsl.exe -- bash -lc 'tr -d "\r" < /mnt/c/.../file > /tmp/file; bash /tmp/file'`
+  (files written from Windows carry CRLF, and bash reads `\r` as part of the command).
+- bash 5.3.9 keeps the original exit status through an `EXIT` trap whose action merely
+  runs a function; `exit N` inside the trap overrides it. Proven with isolated scripts,
+  so `trap 'cleanup' EXIT` in the gate is sound and a failed gate does exit non-zero.
+- The dev stack now runs a MinIO too (9000/9001 published), so the whole suite can run
+  against it with **zero skips**; the acceptance gate still brings its own MinIO from the
+  pinned Chainguard image in its own project.
 - The developer stack (`language-learning-platform` project) may already be running
   on 5432/6379 - the verifier must keep using its own project and auto-chosen ports.
+- Running the whole suite against the live stack takes **~23 minutes** on this machine.
+  Launch it in the background instead of assuming it hung: the per-module `TRUNCATE`
+  reset is the slow part, and a `python.exe` that appears to be doing nothing is usually
+  waiting on the database, not dead.
+- A throwaway verification stack is cheap and safe: `docker compose -p <name> ... down -v`
+  removes only `<name>_*` volumes, and `docker volume ls` proves which names belong to it
+  before anything is removed.
 
-## 7. Known defects / blockers
+## 8. Known defects / blockers
 
-None open. Phases 1-2 and Phase 3 are accepted; the work now is Phase 4.
+None open. Phases 1-2, 3 and 4 are accepted; the work now is Phase 5 (reading,
+listening and media).
+
+Carried forward, each one real and each one owned by a named later phase rather than
+left unmentioned:
+
+| Item | Owner |
+| --- | --- |
+| The login role tabs are clickable `<div>`s, not buttons - no focus ring, no Enter/Space | Phase 13 accessibility pass |
+| `npm install` in the frontend image reports 4 vulnerabilities (3 moderate, 1 high) | Phase 13 dependency update |
+| FastAPI/Starlette deprecation warnings (`ORJSONResponse`, the `HTTP_422_*` constants, per-request `cookies=` in the test client) | Phase 13, with the dependency upgrade |
+| A word's pronunciation cannot be attached from the UI: `audio_asset_id` round-trips through the API and reaches the study card, but there is no upload surface until object storage and media exist. Nothing is faked in its place | Phase 5 |
 
 Phase 4 reminder: the integration `conftest.py` no longer hardcodes the head revision -
 it compares `alembic_version` with the head the scripts define and insists the history

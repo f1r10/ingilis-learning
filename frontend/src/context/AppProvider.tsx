@@ -28,6 +28,11 @@ const AppContext = createContext<AppContextValue | null>(null);
 
 export function AppProvider({ children }: { children: React.ReactNode }) {
   const [subject, setSubject] = useState<Subject>(null);
+  // True only once the session probe below has answered. `ready` cannot simply mean
+  // "the branding arrived": bootstrap usually wins the race against /auth/me/admin, and
+  // a guard that is released in between reads a valid session as no session and bounces a
+  // signed-in teacher to the login page on every hard reload of a deep link.
+  const [probed, setProbed] = useState(false);
 
   const bootstrap = useQuery({
     queryKey: ["bootstrap"],
@@ -56,6 +61,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           /* not logged in */
         }
       }
+      if (!cancelled) setProbed(true);
     })();
     return () => {
       cancelled = true;
@@ -77,8 +83,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }, [ui.default_ui_language]);
 
   const value = useMemo(
-    () => ({ branding, ui, subject, ready: !bootstrap.isLoading, setSubject }),
-    [branding, ui, subject, bootstrap.isLoading],
+    () => ({ branding, ui, subject, ready: !bootstrap.isLoading && probed, setSubject }),
+    [branding, ui, subject, bootstrap.isLoading, probed],
   );
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;

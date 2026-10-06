@@ -846,19 +846,36 @@ PYEOF
 # --------------------------------------------------------------------------- #
 # 8. The committed migration builds the schema
 # --------------------------------------------------------------------------- #
+# Alembic's own view of the chain tip, so this gate never asserts a stamp that a
+# later phase has already moved past.
+alembic_head() {
+  ( cd "$BACKEND" && "$PY" -m alembic heads 2>/dev/null | tail -n 1 | awk '{print $1}' )
+}
+
 run_migrations() {
+  local head
+  head="$(alembic_head)"
+  if [ -z "$head" ]; then
+    bad "could not read the alembic head revision"
+    return 1
+  fi
+  info "committed chain tip: $head"
+
   ( cd "$BACKEND" && "$PY" -m alembic upgrade head ) || { bad "alembic upgrade head failed"; return 1; }
   ( cd "$BACKEND" && "$PY" -m alembic upgrade head ) || { bad "second 'alembic upgrade head' was not a clean no-op"; return 1; }
   info "upgrade head applied, and applying it again is a no-op"
 
   # A brand new process reading the same database proves the DDL survived the
   # process that created it (schema-level restart persistence).
-  ( cd "$BACKEND" && "$PY" - <<'PYEOF'
+  ( cd "$BACKEND" && "$PY" - "$head" <<'PYEOF'
 import asyncio
+import sys
 
 from sqlalchemy import text
 
 from app.core.database import engine
+
+HEAD_REVISION = sys.argv[1]
 
 
 async def main() -> None:
@@ -891,16 +908,161 @@ async def main() -> None:
         f"   .. read back by a fresh process: alembic_version={version} tables={tables} "
         f"columns={columns} foreign_keys={fks} indexes={indexes}"
     )
-    assert version == "0001_bootstrap", f"unexpected alembic_version: {version!r}"
+    assert version == HEAD_REVISION, f"unexpected alembic_version: {version!r}"
     assert tables >= 45, f"expected at least 45 tables, found {tables}"
     assert fks >= 50, f"expected at least 50 foreign keys, found {fks}"
-    assert indexes >= 90, f"expected at least 90 indexes, found {indexes}"
+    assert indexes >= 91, f"expected at least 91 indexes, found {indexes}"
     await engine.dispose()
 
 
 asyncio.run(main())
 PYEOF
   ) || { bad "the migrated schema could not be read back by a fresh process"; return 1; }
+  run_migration_round_trip || return 1
+  return 0
+}
+
+# Downgrade to the revision Phase 1-3 left behind, then upgrade over the top of it
+# with data in the tables. `upgrade head` on an empty database only ever exercises
+# the last revision against nothing; this is the "previous state -> new state"
+# transition every later phase has to survive.
+run_migration_round_trip() {
+  local head
+  head="$(alembic_head)"
+  if [ -z "$head" ]; then
+    bad "could not read the alembic head revision"
+    return 1
+  fi
+
+  ( cd "$BACKEND" && "$PY" -m alembic downgrade 0001_bootstrap ) \
+    || { bad "alembic downgrade 0001_bootstrap failed"; return 1; }
+  ( cd "$BACKEND" && "$PY" - <<'PYEOF'
+import asyncio
+
+from sqlalchemy import text
+
+from app.core.database import engine
+
+
+async def main() -> None:
+    async with engine.connect() as conn:
+        version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar()
+        index = (
+            await conn.execute(
+                text("SELECT indexdef FROM pg_indexes WHERE indexname = 'uq_vocabulary_word_language'")
+            )
+        ).scalar()
+        kept_table = (
+            await conn.execute(
+                text("SELECT count(*) FROM information_schema.tables "
+                     "WHERE table_schema = 'public' AND table_name = 'vocabulary_entry'")
+            )
+        ).scalar()
+        columns = (
+            await conn.execute(
+                text("SELECT count(*) FROM information_schema.columns "
+                     "WHERE table_schema = 'public' AND table_name = 'vocabulary_entry'")
+            )
+        ).scalar()
+    assert version == "0001_bootstrap", f"downgrade left the stamp at {version!r}"
+    assert index is None, f"0002's index survived its own downgrade: {index!r}"
+    # A granular revision must not take the table or its columns with it: a teacher
+    # who rolls back a phase must get the word bank back, not lose it.
+    assert kept_table == 1, "downgrade dropped the vocabulary_entry table"
+    assert columns >= 10, f"downgrade dropped vocabulary_entry columns: {columns}"
+    await engine.dispose()
+
+
+asyncio.run(main())
+PYEOF
+  ) || { bad "the downgraded schema did not match the pre-Phase-4 state"; return 1; }
+  info "downgrade 0001_bootstrap removed only the vocabulary word index"
+
+  ( cd "$BACKEND" && "$PY" - <<'PYEOF'
+import asyncio
+
+from sqlalchemy import text
+
+from app.core.database import engine
+
+INSERT = (
+    "INSERT INTO vocabulary_entry (id, created_at, updated_at, word, learning_language, "
+    "synonyms, antonyms, status) VALUES (gen_random_uuid(), now(), now(), 'roundtrip', 'en', "
+    "'[]'::jsonb, '[]'::jsonb, 'READY') RETURNING id"
+)
+
+
+async def main() -> None:
+    async with engine.connect() as conn:
+        staged = (await conn.execute(text(INSERT))).scalars().all()
+        # Committed, not rolled back: the point of the round trip is that 0002
+        # rebuilds its index over rows that were already written.
+        await conn.commit()
+    assert staged, "could not stage a row for the round trip"
+    await engine.dispose()
+
+
+asyncio.run(main())
+PYEOF
+  ) || { bad "could not stage a vocabulary row before re-upgrading"; return 1; }
+
+  ( cd "$BACKEND" && "$PY" -m alembic upgrade head ) \
+    || { bad "'alembic upgrade head' from 0001_bootstrap failed"; return 1; }
+  ( cd "$BACKEND" && "$PY" - "$head" <<'PYEOF'
+import asyncio
+import sys
+
+from sqlalchemy import text
+
+from app.core.database import engine
+
+HEAD_REVISION = sys.argv[1]
+
+
+async def main() -> None:
+    async with engine.connect() as conn:
+        version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar()
+        definition = (
+            await conn.execute(
+                text("SELECT indexdef FROM pg_indexes WHERE indexname = 'uq_vocabulary_word_language'")
+            )
+        ).scalar()
+        kept = (
+            await conn.execute(text("SELECT count(*) FROM vocabulary_entry WHERE word = 'roundtrip'"))
+        ).scalar()
+        # The rebuilt index has to be usable, not merely present: two live copies of
+        # the staged word must now be impossible. `ON CONFLICT DO NOTHING` reports a
+        # partial-index collision as a skipped row, so an id coming back means failure.
+        # The parentheses matter: `await x.execute(...).scalars()` awaits the *chain*,
+        # which leaves the coroutine un-awaited and this check silently un-run.
+        duplicate = (
+            await conn.execute(
+                text(
+                    "INSERT INTO vocabulary_entry (id, created_at, updated_at, word, learning_language, "
+                    "synonyms, antonyms, status) VALUES (gen_random_uuid(), now(), now(), 'roundtrip', 'en', "
+                    "'[]'::jsonb, '[]'::jsonb, 'READY') ON CONFLICT DO NOTHING RETURNING id"
+                )
+            )
+        ).scalars().all()
+        await conn.execute(text("DELETE FROM vocabulary_entry WHERE word = 'roundtrip'"))
+        await conn.commit()
+    assert version == HEAD_REVISION, f"re-upgrade stamped {version!r}"
+    assert definition is not None, "the vocabulary word index did not come back"
+    assert "UNIQUE" in definition.upper(), definition
+    # Postgres rewrites the predicate in its own spelling - `WHERE (deleted_at IS NULL)`,
+    # with parentheses - so this compares the normalised form rather than the exact text
+    # the migration happened to be written with.
+    normalised = " ".join(definition.lower().replace("(", " ").replace(")", " ").split())
+    assert "where deleted_at is null" in normalised, definition
+    assert kept == 1, f"the round trip lost or duplicated staged rows: {kept}"
+    assert not duplicate, "the rebuilt index accepted a duplicate live word"
+    await engine.dispose()
+
+
+asyncio.run(main())
+PYEOF
+  ) || { bad "re-applying 0002 over existing data failed"; return 1; }
+  info "upgrade from 0001_bootstrap rebuilt the index over existing rows, and it rejects duplicates"
   return 0
 }
 
@@ -1156,7 +1318,7 @@ if [ ${#INFRA_FAILURES[@]} -gt 0 ]; then
 fi
 
 work_step 7  "Create the isolated database + DATABASE_URL auth preflight" "pg"  create_verifier_database
-work_step 8  "alembic upgrade head (committed, deterministic migration)" "pg"   run_migrations
+work_step 8  "alembic upgrade head + downgrade/upgrade round trip" "pg"     run_migrations
 work_step 9  "Run the seed twice and prove idempotency" "pg"                     run_seed_twice
 work_step 10 "Backend unit/static suite" "tool"                                  run_unit_suite
 work_step 11 "Backend integration suite (zero skips allowed)" "pg redis minio"   run_integration_suite

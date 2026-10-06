@@ -27,8 +27,43 @@ def test_healthz_and_openapi_routes_present():
         "/api/v1/groups/{group_id}/members",
         "/api/v1/groups/{group_id}/members/{student_id}",
         "/api/v1/settings/branding",
+        # Phase 3: the question bank and its taxonomy.
+        "/api/v1/questions",
+        "/api/v1/questions/{question_id}",
+        "/api/v1/topics",
+        "/api/v1/tags",
+        # Phase 4: both vocabulary surfaces. A router that is written but never
+        # included looks identical in a grep, so this is where it gets caught.
+        "/api/v1/vocabulary",
+        "/api/v1/vocabulary/{entry_id}",
+        "/api/v1/vocabulary/{entry_id}/preview",
+        "/api/v1/vocabulary/{entry_id}/restore",
+        "/api/v1/vocabulary/{entry_id}/status",
+        "/api/v1/vocabulary/{entry_id}/taxonomy",
+        "/api/v1/vocabulary/bulk",
+        "/api/v1/vocabulary/meta",
+        "/api/v1/student/vocabulary",
+        "/api/v1/student/vocabulary/meta",
+        "/api/v1/student/vocabulary/{entry_id}",
     ]:
         assert p in paths, p
+
+
+def test_the_student_vocabulary_surface_is_read_only():
+    """A learner may browse cards and nothing else.
+
+    The student router must not grow a write method: the word bank belongs to the
+    teacher, and a route that lets a student edit it would be a permission bug
+    shipped as an API.
+    """
+    paths = TestClient(create_app()).get("/openapi.json").json()["paths"]
+    for path, operations in paths.items():
+        if not path.startswith("/api/v1/student/"):
+            continue
+        for method in operations:
+            assert method in ("get", "post"), f"{method.upper()} {path} is not a read for a student"
+        if path.startswith("/api/v1/student/vocabulary"):
+            assert set(operations) == {"get"}, f"{path} exposes {sorted(operations)} to a learner"
 
 
 def test_cors_wraps_csrf_403():

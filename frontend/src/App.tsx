@@ -10,6 +10,9 @@ import Settings from "./pages/Settings";
 import Questions from "./pages/Questions";
 import QuestionEditor from "./pages/QuestionEditor";
 import Topics from "./pages/Topics";
+import Vocabulary from "./pages/Vocabulary";
+import VocabularyEditor from "./pages/VocabularyEditor";
+import StudentVocabulary from "./pages/StudentVocabulary";
 
 function RequireAuth({ children, admin }: { children: React.ReactNode; admin?: boolean }) {
   const { subject, ready } = useApp();
@@ -38,6 +41,9 @@ export default function App() {
           <Route path="/questions" element={<Questions />} />
           <Route path="/questions/new" element={<QuestionEditor />} />
           <Route path="/questions/:id" element={<QuestionEditor />} />
+          <Route path="/vocabulary" element={<Vocabulary />} />
+          <Route path="/vocabulary/new" element={<VocabularyEditor />} />
+          <Route path="/vocabulary/:id" element={<VocabularyEditor />} />
           <Route path="/topics" element={<Topics />} />
           <Route path="/settings" element={<Settings />} />
         </Route>
@@ -49,6 +55,7 @@ export default function App() {
           }
         >
           <Route path="/student" element={<StudentDashboard />} />
+          <Route path="/student/vocabulary" element={<StudentVocabulary />} />
         </Route>
         <Route path="*" element={<Navigate to="/login" replace />} />
       </Routes>

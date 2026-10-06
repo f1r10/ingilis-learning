@@ -1,22 +1,34 @@
 import { useTranslation } from "react-i18next";
+import { Link } from "react-router-dom";
 import { useApp } from "../context/AppProvider";
+
+const TILES = [
+  { to: "/questions", label: "nav.questions" },
+  { to: "/vocabulary", label: "nav.vocabulary" },
+  { to: "/topics", label: "nav.topics" },
+  { to: "/students", label: "nav.students" },
+  { to: "/groups", label: "nav.groups" },
+  { to: "/settings", label: "nav.settings" },
+];
 
 export default function Dashboard() {
   const { t } = useTranslation();
-  const { subject } = useApp();
+  const { subject, branding } = useApp();
   const isAdmin = subject?.kind === "admin";
 
   return (
     <div>
-      <h1>{t("dashboard.welcome")}{isAdmin ? "" : ""}</h1>
+      <h1>{t("dashboard.welcome")}</h1>
       <p className="muted">{isAdmin ? t("dashboard.role_teacher") : t("dashboard.role_student")}</p>
 
       <div className="card">
-        <h2>{t("nav.dashboard")}</h2>
-        <p className="muted">{t("dashboard.placeholder")}</p>
+        <h2>{branding.system_name}</h2>
+        <p className="muted">{isAdmin ? t("dashboard.teacher_start") : t("dashboard.student_start")}</p>
         <div className="row" style={{ flexWrap: "wrap", gap: 12, marginTop: 12 }}>
-          {["Question Bank", "Vocabulary", "Reading", "Listening", "Catalogs", "Exams", "Import", "Analytics", "Monitoring"].map((m) => (
-            <span key={m} className="card small muted" style={{ padding: "0.4rem 0.7rem" }}>{m}</span>
+          {TILES.map((tile) => (
+            <Link key={tile.to} to={tile.to} className="card small" style={{ padding: "0.6rem 0.9rem", textDecoration: "none" }}>
+              {t(tile.label)}
+            </Link>
           ))}
         </div>
       </div>

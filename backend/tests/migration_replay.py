@@ -1,16 +1,22 @@
-"""Replay a frozen Alembic revision's *literal* ops into a synthetic MetaData.
+"""Replay committed Alembic revisions' *literal* ops into a synthetic MetaData.
 
-This is what lets the test suite compare the historical schema encoded by
-``0001_bootstrap_schema`` against the live ORM schema without a PostgreSQL
-server: the revision is executed with a recording ``op`` stand-in, so the result
-is a plain SQLAlchemy ``MetaData`` built only from what the migration spells out
-(no ``Base.metadata``, no ORM import).
+This is what lets the test suite compare the historical schema encoded by the
+migrations against the live ORM schema without a PostgreSQL server: each revision
+is executed with a recording ``op`` stand-in, so the result is a plain SQLAlchemy
+``MetaData`` built only from what the migrations spell out (no ``Base.metadata``,
+no ORM import).
+
+``replay_upgrade`` covers the single frozen bootstrap revision; ``replay_chain``
+covers the whole committed history, which is what the ORM comparison needs once
+revisions after bootstrap exist - otherwise a legitimate ``0002`` would be
+reported as drift in the models.
 
 ``fk_tuples`` / ``index_tuples`` normalise a MetaData into comparable tuples and
 are shared by both the replay-vs-ORM test and the rendered-offline-SQL test.
 """
 from __future__ import annotations
 
+import ast
 import importlib.util
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -33,6 +39,7 @@ class _RecordingOp:
         self.metadata = metadata
         self.created_tables: list[str] = []
         self.created_indexes: list[tuple[str, str]] = []
+        self.dropped_indexes: list[str] = []
         self.unexpected: list[str] = []
 
     def create_table(self, table_name: str, *elements: Any, **_kw: Any) -> None:
@@ -55,16 +62,25 @@ class _RecordingOp:
         sa.Index(index_name, *cols, unique=unique, postgresql_where=where)
         self.created_indexes.append((index_name, table_name))
 
+    def drop_index(self, index_name: str, **_kw: Any) -> None:
+        """Remove a recorded index, so a revision that replaces one replays truthfully.
+
+        `upgrade()` is still expected to *create* schema; `dropped_indexes` is what a
+        test asserts on when a revision is supposed to be purely additive.
+        """
+        for table in self.metadata.tables.values():
+            for idx in list(table.indexes):
+                if idx.name == index_name:
+                    table.indexes.remove(idx)
+        self.dropped_indexes.append(index_name)
+
     def drop_table(self, table_name: str, **_kw: Any) -> None:
         self.unexpected.append(f"drop_table({table_name}) inside upgrade()")
 
-    def drop_index(self, index_name: str, **_kw: Any) -> None:
-        self.unexpected.append(f"drop_index({index_name}) inside upgrade()")
-
     def __getattr__(self, name: str) -> Any:
         raise AssertionError(
-            f"bootstrap revision uses unsupported op {name!r}; the schema must be built from "
-            "literal create_table/create_index ops only"
+            f"a committed revision uses unsupported op {name!r}; the replayed schema must be "
+            "built from literal create_table/create_index/drop_index calls only"
         )
 
 
@@ -74,6 +90,7 @@ class ReplayResult:
     module: Any
     created_tables: list[str] = field(default_factory=list)
     created_indexes: list[tuple[str, str]] = field(default_factory=list)
+    dropped_indexes: list[str] = field(default_factory=list)
     unexpected: list[str] = field(default_factory=list)
 
 
@@ -105,6 +122,96 @@ def replay_upgrade(path: Path = BOOTSTRAP_REVISION) -> ReplayResult:
         module=module,
         created_tables=list(recorder.created_tables),
         created_indexes=list(recorder.created_indexes),
+        dropped_indexes=list(recorder.dropped_indexes),
+        unexpected=list(recorder.unexpected),
+    )
+
+
+def revision_identifiers(path: Path) -> tuple[str | None, str | None]:
+    """(revision, down_revision) read from the module's own assignments.
+
+    Parsed with `ast` rather than executed: the chain order is needed by tests that
+    must not depend on a working `op` proxy.
+    """
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    out: dict[str, Any] = {}
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+            name = node.targets[0].id
+            if name in {"revision", "down_revision"}:
+                try:
+                    out[name] = ast.literal_eval(node.value)
+                except ValueError:
+                    out[name] = None
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            name = node.target.id
+            if name in {"revision", "down_revision"} and node.value is not None:
+                try:
+                    out[name] = ast.literal_eval(node.value)
+                except ValueError:
+                    out[name] = None
+    return out.get("revision"), out.get("down_revision")
+
+
+def chain_paths() -> list[Path]:
+    """Every committed revision, in apply order (base first, head last).
+
+    Walked from the revisions' own `down_revision` values, so the guard compares
+    what Alembic would actually build - not whatever alphabetical order suggests.
+    """
+    files = sorted(VERSIONS_DIR.glob("*.py"))
+    by_down: dict[Any, Path] = {}
+    revs: set[str] = set()
+    for path in files:
+        rev, down = revision_identifiers(path)
+        assert isinstance(rev, str), f"{path.name} declares no string `revision`"
+        assert rev not in revs, f"duplicate revision id {rev}"
+        revs.add(rev)
+        by_down[down] = path
+    base = by_down.get(None)
+    assert base is not None, "no base revision (down_revision = None) found"
+
+    ordered = [base]
+    cursor = base
+    while True:
+        rev, _down = revision_identifiers(cursor)
+        nxt = by_down.get(rev)
+        if nxt is None:
+            break
+        assert nxt not in ordered, f"revision cycle at {nxt.name}"
+        ordered.append(nxt)
+        cursor = nxt
+    assert len(ordered) == len(files), (
+        f"revisions not reachable from the base: "
+        f"{sorted(p.name for p in files if p not in ordered)}"
+    )
+    return ordered
+
+
+def replay_chain() -> ReplayResult:
+    """Replay every committed `upgrade()` into one MetaData: the cumulative schema."""
+    import alembic
+
+    metadata = MetaData()
+    recorder = _RecordingOp(metadata)
+    last_module = None
+    original = getattr(alembic, "op", None)
+    alembic.op = recorder  # type: ignore[assignment]
+    try:
+        for path in chain_paths():
+            module, loader = _load(path, "chain")
+            loader.exec_module(module)
+            module.upgrade()
+            last_module = module
+    finally:
+        if original is not None:
+            alembic.op = original  # type: ignore[assignment]
+    return ReplayResult(
+        metadata=metadata,
+        module=last_module,
+        created_tables=list(recorder.created_tables),
+        created_indexes=list(recorder.created_indexes),
+        dropped_indexes=list(recorder.dropped_indexes),
         unexpected=list(recorder.unexpected),
     )
 

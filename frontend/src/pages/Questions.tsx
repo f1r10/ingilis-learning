@@ -183,6 +183,12 @@ export default function Questions() {
 
       {message ? <div className="alert error" style={{ color: "var(--text)" }}>{message}</div> : null}
 
+      {list.isError ? (
+        <div className="alert error" style={{ color: "var(--text)" }}>
+          {t("common.could_not_load")} {(list.error as ApiError).message}
+        </div>
+      ) : null}
+
       {bulkResult ? (
         <div className="card stack">
           <div className="small">

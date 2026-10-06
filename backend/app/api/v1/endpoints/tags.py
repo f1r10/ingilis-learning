@@ -1,8 +1,8 @@
 """Tag API: free-form labels that sit alongside the topic hierarchy.
 
 Tags are flat and optional. A tag is only deletable while nothing references it, so
-removing one can never quietly rewrite the history of a question that still carries
-it.
+removing one can never quietly rewrite the history of a question or a vocabulary
+entry that still carries it.
 """
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api import deps
 from app.core.database import get_db
 from app.core.exceptions import Conflict, NotFound, ValidationFailed
-from app.models.content import QuestionTag, Tag
+from app.models.content import QuestionTag, Tag, vocabulary_tag
 from app.models.identity import AdminUser
 from app.schemas import question as q_schemas
 from app.services import audit_service
@@ -35,9 +35,32 @@ async def _counts(db: AsyncSession, tag_ids: list[UUID]) -> dict[UUID, int]:
     return {tag_id: int(count) for tag_id, count in rows}
 
 
-def _read(tag: Tag, counts: dict[UUID, int]) -> dict:
+async def _vocabulary_counts(db: AsyncSession, tag_ids: list[UUID]) -> dict[UUID, int]:
+    """How many word entries carry each tag.
+
+    Counted separately from questions because the teacher needs to know which bank to
+    clean up, and because a vocabulary link is deleted by CASCADE just as silently as
+    a question one.
+    """
+    if not tag_ids:
+        return {}
+    rows = (
+        await db.execute(
+            select(vocabulary_tag.c.tag_id, func.count())
+            .where(vocabulary_tag.c.tag_id.in_(tag_ids))
+            .group_by(vocabulary_tag.c.tag_id)
+        )
+    ).all()
+    return {tag_id: int(count) for tag_id, count in rows}
+
+
+def _read(tag: Tag, counts: dict[UUID, int], vocabulary_counts: dict[UUID, int]) -> dict:
     return q_schemas.TagRead(
-        id=tag.id, name=tag.name, color=tag.color, question_count=counts.get(tag.id, 0)
+        id=tag.id,
+        name=tag.name,
+        color=tag.color,
+        question_count=counts.get(tag.id, 0),
+        vocabulary_count=vocabulary_counts.get(tag.id, 0),
     ).model_dump(mode="json")
 
 
@@ -46,8 +69,10 @@ async def list_tags(
     _admin: AdminUser = Depends(deps.get_current_admin), db: AsyncSession = Depends(get_db)
 ) -> dict:
     tags = (await db.execute(select(Tag).order_by(func.lower(Tag.name)))).scalars().all()
-    counts = await _counts(db, [tag.id for tag in tags])
-    return {"items": [_read(tag, counts) for tag in tags], "total": len(tags)}
+    ids = [tag.id for tag in tags]
+    counts = await _counts(db, ids)
+    vocabulary_counts = await _vocabulary_counts(db, ids)
+    return {"items": [_read(tag, counts, vocabulary_counts) for tag in tags], "total": len(tags)}
 
 
 @router.post("", response_model=None, status_code=201)
@@ -76,7 +101,7 @@ async def create_tag(
     await audit_service.record_audit(
         db, action="tag.created", actor_id=admin.id, target_type="tag", target_id=tag.id, after={"name": name}
     )
-    return _read(tag, {})
+    return _read(tag, {}, {})
 
 
 @router.patch("/{tag_id}", response_model=None)
@@ -116,7 +141,8 @@ async def update_tag(
         after={"fields": sorted(changes)},
     )
     counts = await _counts(db, [tag.id])
-    return _read(tag, counts)
+    vocabulary_counts = await _vocabulary_counts(db, [tag.id])
+    return _read(tag, counts, vocabulary_counts)
 
 
 @router.delete("/{tag_id}", response_model=None)
@@ -129,8 +155,18 @@ async def delete_tag(
     if tag is None:
         raise NotFound("Tag not found")
     counts = await _counts(db, [tag_id])
-    if counts.get(tag_id, 0):
-        raise Conflict("tag_in_use", f"'{tag.name}' still labels {counts[tag_id]} question(s)")
+    vocabulary_counts = await _vocabulary_counts(db, [tag_id])
+    questions = counts.get(tag_id, 0)
+    words = vocabulary_counts.get(tag_id, 0)
+    if questions or words:
+        # Naming the bank matters: a tag left over from the word bank is cleaned up
+        # in a different screen than one left over from the question bank.
+        used = []
+        if questions:
+            used.append(f"{questions} question(s)")
+        if words:
+            used.append(f"{words} vocabulary entry(ies)")
+        raise Conflict("tag_in_use", f"'{tag.name}' still labels {' and '.join(used)}")
 
     name = tag.name
     await db.delete(tag)
