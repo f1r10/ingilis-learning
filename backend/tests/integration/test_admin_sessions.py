@@ -62,7 +62,13 @@ async def test_invalid_credentials_never_reveal_whether_the_user_exists(
         "login errors must not distinguish 'unknown user' from 'wrong password'"
     )
     assert error_of(wrong_pw)["code"] == "unauthorized"
-    assert "password" not in error_of(wrong_pw)["message"].lower()
+    # The answer has to stay generic. Naming both halves together is the safe form;
+    # what must never appear is a message that identifies WHICH one was wrong,
+    # because that confirms a username exists (or does not).
+    message = error_of(wrong_pw)["message"].lower()
+    assert "username or password" in message, message
+    for leak in ("no such", "not found", "does not exist", "unknown user", "wrong username", "wrong password"):
+        assert leak not in message, f"the error reveals which half failed: {message}"
 
 
 async def test_replayed_cookie_is_rejected_after_logout(session_factory, clean_db):

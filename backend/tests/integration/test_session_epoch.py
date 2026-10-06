@@ -169,7 +169,12 @@ async def test_concurrent_invalidations_never_lose_or_reset_the_epoch(db_ready):
     async def _bump() -> int:
         async with SessionLocal() as db:
             target = await db.get(AdminUser, admin_id)
-            return await auth_service.bump_admin_session_epoch(db, target)
+            value = await auth_service.bump_admin_session_epoch(db, target)
+            # The service only issues the UPDATE; committing is the caller's job and
+            # in the application that is the request session. Without it every
+            # concurrent bump would roll back at session close.
+            await db.commit()
+            return value
 
     observed = await asyncio.gather(*(_bump() for _ in range(5)))
     final = await _epoch("race-epoch-admin")

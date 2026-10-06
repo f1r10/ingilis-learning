@@ -10,13 +10,16 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-app}
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    # Published on loopback only: the backend reaches this over the compose net,
+    # and the data services stay private (see README 'Production deployment').
     ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-app} -d ${POSTGRES_DB:-app}"]
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 5s
       timeout: 5s
-      retries: 10
+      retries: 20
+      start_period: 5s
 
   redis:
     image: redis:7-alpine
@@ -27,15 +30,22 @@ services:
     volumes:
       - redis_data:/data
     ports:
-      - "${REDIS_PORT:-6379}:6379"
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 3s
-      retries: 10
+      retries: 20
+      start_period: 5s
 
   minio:
-    image: minio/minio:latest
+    # Pinned by digest, and deliberately NOT `minio/minio`: MinIO stopped publishing
+    # that Docker Hub repository (pulls fail with "pull access denied"), their Quay
+    # organisation now only serves AIStor/EOS builds which refuse every S3 call
+    # without a license, and ghcr.io/public.ecr.aws are closed too. This Chainguard
+    # mirror carries the community AGPLv3 server - verified against this app's own
+    # storage suite. Change only to point at a registry mirror you trust.
+    image: ${MINIO_IMAGE:-cgr.dev/chainguard/minio@sha256:a05a4497e8dce3cb7a7a1bf1872ba5d30ea988f1e8c22c9e0920503761c4b5f1}
     restart: unless-stopped
     command: ["server", "/data", "--console-address", ":9001"]
     environment:
@@ -44,13 +54,17 @@ services:
     volumes:
       - minio_data:/data
     ports:
-      - "${MINIO_API_PORT:-9000}:9000"
-      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+      - "127.0.0.1:${MINIO_API_PORT:-9000}:9000"
+      - "127.0.0.1:${MINIO_CONSOLE_PORT:-9001}:9001"
     healthcheck:
-      test: ["CMD", "mc", "ready", "local"]
-      interval: 10s
+      # `mc ready local` is the S3-level readiness check MinIO documents and the
+      # only probe this image ships (the Chainguard build has no curl). The curl
+      # fallback keeps the check working if MINIO_IMAGE points at another build.
+      test: ["CMD-SHELL", "mc ready local || curl -fsS http://localhost:9000/minio/health/ready"]
+      interval: 5s
       timeout: 5s
-      retries: 10
+      retries: 20
+      start_period: 5s
 
   backend:
     build:

@@ -1,0 +1,10 @@
+# Line endings are a correctness issue here, not cosmetics: the mandatory acceptance
+# gate is a bash script that runs under WSL/Linux against this same working tree, and
+# a CRLF checkout makes it fail on `\r`. Force LF for everything a shell or Docker
+# consumes; text=auto keeps the usual normalisation for the rest.
+* text=auto
+*.sh text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.sql text eol=lf
+Makefile text eol=lf

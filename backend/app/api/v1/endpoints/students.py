@@ -67,16 +67,17 @@ async def suggest_username(
     name: str = Query(...), surname: str = Query(...), db: AsyncSession = Depends(get_db)
 ) -> dict:
     base = _suggest_username(name, surname)
-    candidate = base
-    suffix = 1
+    suffix = 0
     while True:
+        # `base`, then `base1`, `base2`, ... - no gap in the sequence, and the
+        # username column is unique so a free candidate always exists.
+        candidate = base if suffix == 0 else f"{base}{suffix}"
         exists = (
             await db.execute(select(Student.id).where(Student.username == candidate))
         ).scalar_one_or_none()
         if not exists:
             return {"username": candidate}
         suffix += 1
-        candidate = f"{base}{suffix}"
 
 
 @router.get("", response_model=None)

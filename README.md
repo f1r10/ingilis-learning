@@ -16,10 +16,10 @@ editable in Admin Settings — the platform name is never hard-coded.
 > import review, monitoring, analytics, exports, backups) build on this foundation
 > **without schema changes** — the complete data model is already in place.
 >
-> Phase 1–2 is accepted by one command: **`make verify-phase12`** (see
-> [Tests](#tests)). It is the only run that may claim the database, Redis and object
-> storage work, because unlike `pytest` it treats a skipped infrastructure check as a
-> failure.
+> Phase 1–2 is accepted by one command: **`bash scripts/verify_phase12.sh`** (also
+> `make verify-phase12`; see [Tests](#tests)). It is the only run that may claim the
+> database, Redis and object storage work, because unlike `pytest` it treats a skipped
+> infrastructure check as a failure, and it needs no developer `.env` and no `make`.
 
 ---
 
@@ -348,48 +348,100 @@ reason and are counted as `skipped`.
 **A run in which the integration tests skipped has verified nothing about the
 database, Redis or object storage.** Green here does not mean Phase 1-2 accepted.
 
-### 2. Mandatory Phase 1-2 acceptance test - `make verify-phase12`
+### 2. Mandatory Phase 1-2 acceptance test - `scripts/verify_phase12.sh`
 
 ```bash
-make verify-phase12
-# equivalent, and the form to use if `make` is not installed:
+# from the repository root - this is the supported path, on WSL, Linux, macOS or
+# Windows, and needs no `make`:
 bash scripts/verify_phase12.sh
+
+make verify-phase12          # exactly the same script
 ```
 
-One command, deterministic, and **it does not report success if any required
-infrastructure was skipped**. It:
+One command, deterministic, self-contained, and **it does not report success if any
+required infrastructure was skipped or only pretended to run**. Its 13 steps:
 
-1. checks Docker (CLI + a reachable daemon) and the local virtualenv/deps
-2. starts PostgreSQL
-3. starts Redis
-4. starts MinIO
-5. **waits for each service's real healthcheck** (plus a TCP/`pg_isready` proof
-   from this machine) instead of sleeping and hoping
-6. creates a **fresh, isolated verification database** (`app_verify_phase12` by
-   default), refusing to touch anything whose name is not `*_test`/`*_verify_phase12`
-   and asserting it is empty before migrating
-7. runs `alembic upgrade head` - the committed migration, twice, proving the
-   second application is a clean no-op - then reads the schema back from a **new
-   process** and asserts `alembic_version`, table, FK and index counts
-8. runs the seed **twice** and compares row counts to prove idempotency
-9. runs the offline unit/static suite
-10. runs the **full integration suite** (Postgres + Redis + MinIO)
-11. exercises MinIO object storage through the application's own storage
-    abstraction and confirms the verify bucket exists
-12. starts the ARQ worker and checks that it comes up and stays up with every
-    optional adapter disabled
+1. Docker CLI + reachable daemon, and **one native interpreter for every Python,
+   pytest, Alembic, ARQ and helper call** (see the platform rules below)
+2. generates this run's throwaway environment (one file, one source of truth)
+3. starts PostgreSQL **in an isolated compose project**
+4. starts Redis
+5. starts MinIO (pinned official Quay image - see below)
+6. waits for each service's **real healthcheck**, then proves it at the protocol
+   level: `pg_isready`, a host TCP connect, a Redis `PING` through the
+   application's own client, and an authenticated S3 `ListBuckets`
+7. creates the isolated verification database (`app_verify_phase12` by default),
+   refusing any name that is not `*_test` / `test_*` / `*_verify_phase12`, asserting
+   it is empty, and then **authenticating with the exact `DATABASE_URL` the
+   integration suite will use** - a wrong credential fails here, not as 74 skips
+8. `alembic upgrade head` - the committed migration, twice, proving the second
+   application is a clean no-op - then reads the schema back from a **new process**
+   and asserts `alembic_version` plus table, column, FK and index counts
+9. runs the seed **twice** and compares row counts to prove idempotency
+10. runs the offline unit/static suite
+11. runs the **full integration suite** (Postgres + Redis + MinIO)
+12. exercises MinIO object storage through the application's own storage
+    abstraction and confirms the verify bucket exists over S3 afterwards
+13. starts the ARQ worker with every optional adapter disabled and requires its
+    attempt-expiry cron to **complete against live PostgreSQL** before stopping it
 
-Configuration for the run is generated (throwaway session/CSRF secrets, throwaway
-bootstrap admin password) and pointed at the isolated database, Redis db 1 and a
-`-verify` bucket, so it never uses a real secret and never touches development
-data. Nothing prints a credential.
+**Platform rules (the defect this gate used to have).** A WSL shell must never hand
+`/mnt/c/...` paths to a Windows `python.exe`, so the verifier picks a virtualenv
+belonging to the platform it is running on and asserts the interpreter matches:
 
-Every step is mandatory: a step that fails, or whose tests **skip**, is recorded as
-a failure. The script lists all failed steps and exits non-zero; only a full pass
-ends with `All mandatory Phase 1-2 checks passed against live PostgreSQL, Redis and
-MinIO.` Flags: `--down` stops the services afterwards, `--keep` keeps the
-verification database for inspection. Reports and the worker log land in
-`backend/.verify-phase12/`.
+| Running from | Interpreter used |
+| --- | --- |
+| WSL with the repo under `/mnt/c` | `$HOME/.local/share/verify-phase12/venv` (Linux venv kept off the Windows mount, where its symlinks are unreliable) |
+| Linux/macOS, or WSL with the repo on ext4 | `backend/.verify-venv-wsl` |
+| Windows PowerShell / Git Bash | `backend/.venv` |
+
+`backend/.venv/Scripts/python.exe` is never selected from WSL, and the first run
+builds the venv itself (`python3 -m venv`, bootstrapping pip if the distro ships
+`python3` without `ensurepip`) and installs the backend with its dev extras.
+
+**Self-contained configuration.** The run needs no developer `.env` - it generates
+`backend/.verify-phase12/verify.env` (mode 600) with fresh random PostgreSQL
+password, MinIO key pair, session/CSRF secrets and bootstrap admin password, then
+feeds those same values to Compose interpolation, `psql`, Alembic, pytest, the
+worker and every probe. Nothing re-derives a credential anywhere, and no secret
+value is ever printed (URLs are shown with the password replaced by `***`). The file
+is deleted with the run.
+
+**Isolation from your development stack.** Verification always runs as compose
+project `llp_phase12_verify` - never the project named in `docker-compose.yml` - on
+loopback ports chosen per run (so a dev Postgres on 5432 is no obstacle), with its
+own disposable volumes, Redis db 1 and `platform-media-verify` bucket. Only that
+project is ever created, removed or `down --volumes`'d: **development volumes are
+never touched.** A leftover verification volume from an earlier run is removed first,
+because it would still hold the previous run's password.
+
+Every step is mandatory: a step that fails, or whose tests **skip**, is recorded as a
+failure. The script also refuses to run a suite whose infrastructure never came up,
+and the final report separates **infrastructure failures** from **test failures** and
+from **mandatory checks that could not run**, so a missing service is never mistaken
+for a passing test. Exit code 0 plus
+`PHASE 1-2 ACCEPTED: every mandatory check passed against live PostgreSQL, Redis and
+MinIO.` is the only accepted outcome.
+
+Flags and environment overrides: `--keep` (leave containers, volumes and the
+generated env file for inspection and print the exact teardown command), `--down`,
+`--venv=/path` (or `VERIFY_VENV`), `PYTHON3_BIN`, `HEALTH_TIMEOUT` /
+`WORKER_TIMEOUT`, `VERIFY_COMPOSE_PROJECT`, `VERIFY_TEST_DB`,
+`VERIFY_OBJECT_STORAGE_BUCKET`, `MINIO_IMAGE`, and forced
+`POSTGRES_PORT` / `REDIS_PORT` / `MINIO_API_PORT` / `MINIO_CONSOLE_PORT`. JUnit
+reports and the worker log land in `backend/.verify-phase12/`.
+
+The MinIO service is pinned by digest to
+`cgr.dev/chainguard/minio@sha256:a05a4497…`, the community AGPLv3 MinIO server
+(`RELEASE.2026-09-22T19-25-18Z`). This is a deliberate choice, not a preference:
+`docker.io/minio/minio` is no longer published at all (every tag returns
+`pull access denied`), and MinIO's Quay organisation now serves only AIStor/EOS
+builds, which start and pass a naive healthcheck but then log `No valid license
+found … All S3 operations are denied` - an object store that cannot store objects.
+ghcr.io and public.ecr.aws are closed for the product too. The verifier detects a
+licensed build and says so instead of timing out silently. Its healthcheck
+(`mc ready local || curl …/minio/health/ready`) uses only tools that ship in the
+pinned image.
 
 `make test-integration` remains available when you have started the services
 yourself; like plain `pytest`, it skips instead of failing when one is missing, so

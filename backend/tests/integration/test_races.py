@@ -53,6 +53,14 @@ async def _live_session_count(student_id: str) -> int:
         )
 
 
+async def _key_rows(student_id: str) -> list[StudentAccessKey]:
+    async with SessionLocal() as db:
+        result = await db.execute(
+            select(StudentAccessKey).where(StudentAccessKey.student_id == uuid.UUID(student_id))
+        )
+        return list(result.scalars())
+
+
 async def test_two_concurrent_recovery_code_claims_yield_exactly_one_success(
     client, session_factory, clean_db, admin_credentials
 ):
@@ -88,8 +96,8 @@ async def test_two_concurrent_recovery_code_claims_yield_exactly_one_success(
 
 async def test_concurrent_rotations_can_never_leave_two_active_keys(client, clean_db):
     """S8: rotation is revoke-then-insert in one transaction, protected by a
-    partial unique index - so no committed state has two live keys, and the loser
-    gets a clean conflict instead of a 500."""
+    partial unique index - so no committed state has two live keys, and a request
+    that loses the race answers 200 (last write wins) or a clean 409, never a 500."""
     created = await client.post(
         "/api/v1/students", json={"name": "Race", "surname": "Rotate", "username": "race-rotate"}
     )
@@ -112,10 +120,31 @@ async def test_concurrent_rotations_can_never_leave_two_active_keys(client, clea
         "exactly one ACTIVE key may exist after concurrent rotations"
     )
 
-    # The winner's plaintext key is the one the database now points at.
-    winner = next(r for r in outcomes if r.status_code == 200)
+    # Which transaction lands last is not decided by the order of the responses:
+    # under READ COMMITTED a rotation that waits on the other's row lock re-runs
+    # its revoke against the freshly inserted key once the winner commits, so it
+    # either loses on the partial unique index (409) or overwrites it (200, last
+    # write wins). Either way the surviving key must be one that was actually
+    # handed to the teacher, and every issued key that is not the survivor must
+    # be revoked - never ACTIVE, never silently missing.
+    issued = {
+        security.access_key_fingerprint(r.json()["access_key"]): r
+        for r in outcomes
+        if r.status_code == 200
+    }
+    assert issued, "at least one rotation must return a key"
+
     survivor = (await client.get(f"/api/v1/students/{student_id}")).json()["active_key_prefix"]
-    assert survivor == security.access_key_fingerprint(winner.json()["access_key"])
+    assert survivor in issued, f"{survivor} was never returned by a successful rotation"
+
+    rows = await _key_rows(student_id)
+    assert [k.key_prefix for k in rows if k.status == enums.AccessKeyStatus.ACTIVE] == [survivor]
+    for prefix, response in issued.items():
+        if prefix == survivor:
+            continue
+        overwritten = [k for k in rows if k.key_prefix == prefix]
+        assert len(overwritten) == 1, f"the overwritten key {prefix} is missing from the history"
+        assert overwritten[0].status == enums.AccessKeyStatus.REVOKED, response.text
 
 
 async def test_concurrent_duplicate_membership_adds_exactly_one_row(client, clean_db):

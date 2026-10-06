@@ -148,16 +148,23 @@ async def test_rotation_leaves_no_window_where_both_keys_are_valid(client, sessi
     revoked = [k for k in await _key_rows(student_id) if k.status == enums.AccessKeyStatus.REVOKED]
     assert len(revoked) == 1 and revoked[0].revoked_at is not None
 
-    fresh = session_factory()
-    await fresh.login_student(new_key)
-    assert (await fresh.get("/api/v1/auth/me/student")).status_code == 200
-
-    # rotation also ends the session established with the old key
+    # Rotation also ends the session established with the old key. This is checked
+    # before the fresh login below, because that login legitimately creates a new
+    # live session and would mask the termination.
     live = await client.get(f"/api/v1/students/{student_id}/sessions")
     assert live.status_code == 200, live.text
     assert live.json()["items"] == [], "rotation must terminate the old student session"
     assert (await _live_sessions(student_id)) == []
     assert (await student_session.get("/api/v1/auth/me/student")).status_code == 401
+
+    fresh = session_factory()
+    await fresh.login_student(new_key)
+    assert (await fresh.get("/api/v1/auth/me/student")).status_code == 200
+
+    tracked = await client.get(f"/api/v1/students/{student_id}/sessions")
+    assert len(tracked.json()["items"]) == 1, (
+        "the new login is the only live session after rotation"
+    )
 
 
 async def test_revocation_removes_the_key_and_ends_sessions(client, session_factory):
@@ -242,6 +249,11 @@ async def test_suggest_username_avoids_existing_collisions(client):
     await _create_student(client, "Ada", "L", "adal")
     second = await client.get("/api/v1/students/suggest-username", params={"name": "Ada", "surname": "L"})
     assert second.json()["username"] == "adal1"
+
+    # The sequence has no gaps: `adal1` is offered before `adal2` is ever reached.
+    await _create_student(client, "Ada", "L", "adal1")
+    third = await client.get("/api/v1/students/suggest-username", params={"name": "Ada", "surname": "L"})
+    assert third.json()["username"] == "adal2"
 
 
 async def test_unauthenticated_admin_routes_require_a_session(session_factory):

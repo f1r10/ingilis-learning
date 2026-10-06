@@ -9,8 +9,10 @@ The schema for every test is rebuilt by running the REAL bootstrap migration
 (`alembic upgrade head`), not `Base.metadata.create_all()`, so the committed DDL
 itself is exercised end to end.
 
-`make verify-phase12` (repo root) brings the services up and treats any skip here
-as a failure. Manually:
+`bash scripts/verify_phase12.sh` (repo root, also available as
+`make verify-phase12`) starts an isolated Postgres/Redis/MinIO, points this suite at
+a throwaway `*_verify_phase12` database, and treats any skip here as a failure. To
+run the suite by hand against your own dev stack:
 
     docker compose -f ../docker-compose.yml up -d postgres redis minio
     cd backend
@@ -70,6 +72,29 @@ def _services_available() -> tuple[bool, str]:
 DB_OK, DB_REASON = _services_available()
 
 
+def _guard_disposable_database(url: str) -> str:
+    """Return the target database name, refusing one that could hold real data.
+
+    The schema reset below is a `DROP SCHEMA ... CASCADE`, so pointing DATABASE_URL
+    at an application database would be unrecoverable. A name has to declare itself
+    disposable; anything else is a configuration error and fails immediately rather
+    than being skipped away.
+    """
+    from sqlalchemy.engine import make_url
+
+    name = make_url(url).database or ""
+    lowered = name.lower()
+    if not (
+        lowered.endswith("_test") or lowered.startswith("test_") or "_verify" in lowered
+    ):
+        raise RuntimeError(
+            f"refusing to reset the schema of database {name!r}: integration tests only "
+            "run against a disposable database whose name ends in '_test', starts with "
+            "'test_' or contains '_verify'. Point DATABASE_URL at such a database."
+        )
+    return name
+
+
 def _rebuild_schema_with_migrations() -> None:
     """Drop the whole schema, then recreate it by running the committed migration.
 
@@ -80,6 +105,7 @@ def _rebuild_schema_with_migrations() -> None:
     from alembic.config import Config as AlembicConfig
 
     settings = get_settings()
+    _guard_disposable_database(settings.database_url)
 
     async def _drop() -> None:
         # throwaway NullPool engine: never share pooled connections across loops
@@ -88,7 +114,12 @@ def _rebuild_schema_with_migrations() -> None:
         )
         try:
             async with disposer.begin() as conn:
-                await conn.run_sync(Base.metadata.drop_all)
+                # DDL-level drop, not `Base.metadata.drop_all`: the ORM only knows the
+                # tables the models still declare, so objects left over from an earlier
+                # schema would survive and could satisfy a test that the committed
+                # migration itself does not create.
+                await conn.execute(text("DROP SCHEMA public CASCADE"))
+                await conn.execute(text("CREATE SCHEMA public"))
         finally:
             await disposer.dispose()
 
@@ -330,10 +361,22 @@ class AuthedClient:
 
 @pytest_asyncio.fixture
 async def client(clean_db):
+    """An ADMIN-AUTHENTICATED client, because that is what these flows test.
+
+    Every admin-facing integration test starts from a live session; making the
+    fixture log in once keeps the tests about their subject instead of about
+    boilerplate. A test that needs the opposite (no session at all) builds its own
+    client with `session_factory()`. Tests whose subject IS the login still call
+    `login_admin()` explicitly - performing a second login is harmless here because
+    admin sessions are stateless tokens (no session rows to count) and
+    `isolate_test_state` clears the login rate-limit window before every test.
+    """
     app = create_app()
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as raw:
-        yield AuthedClient(raw)
+        authed = AuthedClient(raw)
+        await authed.login_admin()
+        yield authed
 
 
 @pytest_asyncio.fixture

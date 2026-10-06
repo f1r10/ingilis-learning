@@ -20,7 +20,11 @@ from sqlalchemy.dialects import postgresql
 from app.core.database import SessionLocal
 
 _PG = postgresql.dialect()
-NOT_APP_SCHEMA = "NOT IN ('pg_catalog', 'information_schema')"
+# The application's objects all live in one schema. Comparing against
+# `NOT IN ('pg_catalog', 'information_schema')` was not enough: PostgreSQL also
+# keeps its TOAST tables in `pg_toast`, and naming that schema explicitly is what
+# keeps 76 internal indexes out of an application-level comparison.
+APP_SCHEMA = "public"
 
 
 async def _reflect() -> dict:
@@ -45,7 +49,9 @@ async def _reflect() -> dict:
                 for fk in insp.get_foreign_keys(table)
             ]
             out["uniques"][table] = [
-                (table, uc["name"], tuple(sorted(uc["constrained_columns"])))
+                # SQLAlchemy's unique-constraint rows key the columns as
+                # `column_names` (only FK and PK dicts use `constrained_columns`).
+                (table, uc["name"], tuple(sorted(uc["column_names"])))
                 for uc in insp.get_unique_constraints(table)
             ]
 
@@ -56,7 +62,21 @@ async def _reflect() -> dict:
 
 
 def _compiled(col_type) -> str:
-    return str(col_type.compile(dialect=_PG)).upper()
+    return _normalise_type(str(col_type.compile(dialect=_PG)).upper())
+
+
+# PostgreSQL accepts several spellings for one type and the inspector reports the
+# canonical one: `FLOAT` without precision *is* `DOUBLE PRECISION`, `FLOAT(24)` is
+# `REAL`. Without this, 11 correctly migrated float columns would read as drift.
+_TYPE_ALIASES = {
+    "FLOAT": "DOUBLE PRECISION",
+    "FLOAT(53)": "DOUBLE PRECISION",
+    "FLOAT(24)": "REAL",
+}
+
+
+def _normalise_type(rendered: str) -> str:
+    return _TYPE_ALIASES.get(rendered, rendered)
 
 
 async def test_every_table_the_models_define_exists(db_ready, app_metadata):
@@ -127,7 +147,13 @@ async def test_primary_keys_foreign_keys_and_uniques_match_the_models(db_ready, 
 
 
 async def test_indexes_exist_are_unique_where_declared_and_ordered(db_ready, app_metadata):
-    """Read straight from pg_index, so column order and partial predicates count."""
+    """Read straight from pg_index, so column order and partial predicates count.
+
+    Primary keys and `UniqueConstraint`s are left out on purpose: they are indexes
+    in PostgreSQL, but the models declare them as constraints and this file already
+    compares them constraint-for-constraint above. What is compared here is exactly
+    the set of `Index` objects the models declare.
+    """
     query = text(
         f"""
         SELECT c.relname, i.relname, idx.indisunique,
@@ -139,7 +165,12 @@ async def test_indexes_exist_are_unique_where_declared_and_ordered(db_ready, app
         JOIN pg_namespace n ON n.oid = c.relnamespace
         CROSS JOIN LATERAL unnest(idx.indkey) WITH ORDINALITY AS k(attnum, ord)
         JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = k.attnum
-        WHERE n.nspname {NOT_APP_SCHEMA}
+        WHERE n.nspname = '{APP_SCHEMA}'
+          AND NOT idx.indisprimary
+          AND NOT EXISTS (
+              SELECT 1 FROM pg_constraint con
+              WHERE con.conindid = idx.indexrelid AND con.conrelid = idx.indrelid
+          )
         GROUP BY c.relname, i.relname, idx.indisunique, idx.indpred
         """
     )
@@ -191,7 +222,7 @@ async def test_enum_columns_are_varchar_without_check_constraints_or_native_type
                     f"SELECT con.conname FROM pg_constraint con "
                     f"JOIN pg_class rel ON rel.oid = con.conrelid "
                     f"JOIN pg_namespace n ON n.oid = rel.relnamespace "
-                    f"WHERE con.contype = 'c' AND n.nspname {NOT_APP_SCHEMA}"
+                    f"WHERE con.contype = 'c' AND n.nspname = '{APP_SCHEMA}'"
                 )
             )
         ).all()
@@ -200,7 +231,7 @@ async def test_enum_columns_are_varchar_without_check_constraints_or_native_type
                 text(
                     f"SELECT t.typname FROM pg_type t "
                     f"JOIN pg_namespace n ON n.oid = t.typnamespace "
-                    f"WHERE t.typtype = 'e' AND n.nspname {NOT_APP_SCHEMA}"
+                    f"WHERE t.typtype = 'e' AND n.nspname = '{APP_SCHEMA}'"
                 )
             )
         ).all()
@@ -225,7 +256,7 @@ async def test_security_relevant_server_defaults_are_present(db_ready):
                 text(
                     "SELECT table_name, column_name, column_default, is_nullable "
                     "FROM information_schema.columns "
-                    f"WHERE table_schema {NOT_APP_SCHEMA}"
+                    f"WHERE table_schema = '{APP_SCHEMA}'"
                 )
             )
         ).all()
