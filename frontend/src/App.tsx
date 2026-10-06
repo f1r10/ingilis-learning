@@ -7,6 +7,9 @@ import StudentDashboard from "./pages/StudentDashboard";
 import Students from "./pages/Students";
 import Groups from "./pages/Groups";
 import Settings from "./pages/Settings";
+import Questions from "./pages/Questions";
+import QuestionEditor from "./pages/QuestionEditor";
+import Topics from "./pages/Topics";
 
 function RequireAuth({ children, admin }: { children: React.ReactNode; admin?: boolean }) {
   const { subject, ready } = useApp();
@@ -32,6 +35,10 @@ export default function App() {
           <Route path="/dashboard" element={<Dashboard />} />
           <Route path="/students" element={<Students />} />
           <Route path="/groups" element={<Groups />} />
+          <Route path="/questions" element={<Questions />} />
+          <Route path="/questions/new" element={<QuestionEditor />} />
+          <Route path="/questions/:id" element={<QuestionEditor />} />
+          <Route path="/topics" element={<Topics />} />
           <Route path="/settings" element={<Settings />} />
         </Route>
         <Route

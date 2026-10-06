@@ -3,9 +3,11 @@
 Continuation state file. Reread this after any context loss and keep going - do not
 re-plan work that is already recorded as done here.
 
-- Current phase: **Phase 3 - question bank + question engine** (Phase 1-2 accepted)
-- Git: branch `main`, remote target `https://github.com/f1r10/ingilis-learning`
-- Last commit: `e9ed2af Initial project upload`, then the Phase 1-2 acceptance commit below
+- Current phase: **Phase 4 - vocabulary module** (Phases 1-2 and 3 accepted)
+- Git: branch `main`, remote `https://github.com/f1r10/ingilis-learning.git`
+- Last commits: `2ab3294 chore: complete phase 1-2 acceptance hardening` (pushed),
+  then the Phase 3 commit made by this change - `git rev-parse HEAD` after it is the
+  authoritative value for this line, and the next phase must rewrite it
 
 ---
 
@@ -62,8 +64,8 @@ language, never developer jargon. Heavy operations run in the worker.
 | Phase | Scope | Status |
 | --- | --- | --- |
 | 1-2 | Foundation: infra, identity, students, groups, settings/branding, security, migrations, tests, acceptance gate | **accepted - `verify_phase12.sh` exit 0, 13/13 steps, 0 mandatory skips** |
-| 3 | Question bank + full question engine (all types, `QuestionVersion` immutability) | **in progress** |
-| 4 | Vocabulary module | not started |
+| 3 | Question bank + full question engine (all types, `QuestionVersion` immutability) | **accepted - `verify_phase12.sh` exit 0, 13/13 steps, 0 mandatory skips** |
+| 4 | Vocabulary module | **in progress** |
 | 5 | Reading + listening + media libraries (object storage) | not started |
 | 6 | Catalogs + practice | not started |
 | 7 | Exams + assignments + attempt engine + grading | not started |
@@ -146,7 +148,59 @@ Last green run (2026-10-06, WSL Ubuntu + Docker 29.1.3 / Compose 2.40.3):
 
 ---
 
-## 4. Working commands
+## 4. Phase 3 - question bank + question engine (accepted)
+
+Backend: `app/services/question_engine.py` (registry of 9 types, per-type pydantic
+config with `extra="forbid"`, opaque element refs, partial-credit and negative-marking
+rules, key-free `public_config()` projectors) and `app/services/question_service.py`
+(create/patch with an immutable `QuestionVersion` per content change, clone, trash and
+restore, status lifecycle, taxonomy filing, list with 13 filters + sort + pagination,
+per-id bulk, `student_view`, `grade` including `at_version` replay of a frozen
+snapshot). Endpoints in `app/api/v1/endpoints/questions.py`, `topics.py`, `tags.py`.
+No migration was needed - `0001_bootstrap` already carried every table, so it is still
+the only revision.
+
+Frontend (no redesign, same shell and tokens): `api/questions.ts` (payload types
+mirrored from the real responses), `pages/Questions.tsx` (filter/sort/paginate/trash
+view + bulk toolbar), `pages/QuestionEditor.tsx` (all 9 type forms, learner preview,
+live "try an answer" against the real grader, version history), `pages/Topics.tsx`
+(topic tree + tags), `components/QuestionConfigForm.tsx`, `components/LearnerPreview.tsx`;
+routes `/questions`, `/questions/new`, `/questions/:id`, `/topics` and az/en/ru/tr copy.
+
+### Defects found in this phase and fixed at the root
+
+| Defect | Fix |
+| --- | --- |
+| Every write endpoint 500'd under asyncio (`MissingGreenlet` on `updated_at`) | `TimestampMixin.__mapper_args__ = {"eager_defaults": True}` - no DDL change, so the bootstrap revision stayed frozen |
+| The learner payload could carry answer-key material, and matching/ordering published in authored order betrayed the key | `public_config()` strips the key per type, elements travel as `sha256(role\x1findex\x1fvalue)[:12]` refs only, `_least_aligned()` rotates the display order off the key, distractors are published like any other option, and a test greps every learner payload for a sentinel answer string |
+| Renaming or moving a topic could put two siblings on one name (silent filing corruption; `parent_id.is_(uuid)` was also being trusted for a non-NULL value) | shared `_sibling_clash()` (case-insensitive, `IS NULL` aware, `exclude_id`) used by create **and** update, checked before anything is mutated; `topic_exists` 409 |
+| The editor's trial answer hashed refs with a pseudo-implementation that treated `crypto.subtle.digest` as synchronous and called an undefined `jsSha256` | real `await crypto.subtle.digest`, and an explicit "this browser context cannot compute the ref" message instead of a fake grade |
+| `frontend/vite.config.ts` did not compile (TS2580 `process`, plus a `credentials` key `ProxyOptions` has never had), which kept the whole build red before any Phase 3 file was type-checked | `loadEnv(mode, ".")` (still picks up a shell `VITE_PROXY_TARGET`) and the unsupported key dropped; same-origin dev cookies are unaffected |
+| Bulk actions: the backend answers per id (`updated`/`refused`/`not_found` lists) but the UI declared counts, so the teacher's banner would have rendered a UUID dump | `BulkResult` now mirrors the API and the bank shows counts plus each refusal with its reason |
+| Retyping a question was impossible from the editor: the patch omitted `partial_scoring`/`negative_scoring`, so the old type's values stayed on the row and the new type was refused | the editor always sends both objects (empty when the type has no such knob); pinned by `test_retyping_clears_the_scoring_knobs_the_new_type_has_not` |
+| Three taxonomy tests failed while the product was correct | the helper `_find()` raised inside its own recursion; split into `_walk()`/`_find()` rather than bending the assertions |
+| A taxonomy test asserted a tag could be detached from a trashed question | the trash is frozen by design (`allow_trash=False` -> 404); the test now asserts the refusal, restores, then unlinks |
+
+### Evidence
+
+- `bash scripts/verify_phase12.sh` -> **exit 0**, `passed steps: 13 / 13`,
+  unit/static **168 passed**, integration (Postgres+Redis) **133 passed**, MinIO
+  round-trip **8 passed**, `0 failed | 0 errors | 0 skipped` in all three
+- developer loop: `295 passed, 7 skipped` (the 7 are MinIO-dependent and green in the
+  gate), `ruff check app tests migrations scripts` clean
+- frontend: `docker build frontend` (the shipped `node:20-alpine` stage running
+  `tsc -b && vite build`) -> green, `dist/` produced; there is no Node toolchain on
+  this machine, so the shipped compiler image is the type-check path
+
+### Open Phase 3 notes
+
+- The new screens were verified by the production compile and an endpoint-by-endpoint
+  payload review against the real responses; they were not clicked through in a
+  browser, because authenticating one here would mean printing the dev admin password.
+- `npm install` in the frontend image reports 4 vulnerabilities (3 moderate, 1 high)
+  in the dependency tree - a Phase 13 hardening item.
+
+## 5. Working commands
 
 ```bash
 # mandatory acceptance (WSL / Linux / macOS / Windows; needs Docker, no make)
@@ -155,6 +209,16 @@ bash scripts/verify_phase12.sh                 # add --keep to inspect the run a
 # offline developer tests (never an acceptance result)
 cd backend && pytest tests --ignore=tests/integration
 cd backend && ruff check app tests migrations scripts
+
+# integration tests against the dev stack's PostgreSQL/Redis (Windows venv).
+# The URL is derived, never printed, and --basetemp keeps Windows temp dirs sane:
+cd backend && mkdir -p ../.tmp \
+  && DBURL=$(grep -m1 '^DATABASE_URL=' .env | cut -d= -f2- | sed 's|/app$|/app_test|') \
+  && DATABASE_URL="$DBURL" .venv/Scripts/python.exe -m pytest tests -q --basetemp=../.tmp/bt
+# one process at a time: two suites share app_test and truncate each other
+
+# frontend compile, using the image the product actually ships (no local node here)
+wsl.exe -- bash -lc 'rm -rf ~/fecheck; mkdir -p ~/fecheck; cp -r <repo>/frontend/. ~/fecheck/; cd ~/fecheck; docker build -t llp-fe-check .'
 
 # dev stack
 cp .env.example .env && docker compose up --build
@@ -167,7 +231,7 @@ bash state does not persist between commands, so `cd` in every command.
 WSL path for the same repo: `/mnt/c/Users/firon/Documents/Qoder/2026-10-06/1438da7f`
 (run with `wsl -e bash -lc '...'`).
 
-## 5. Environment facts worth not re-discovering
+## 6. Environment facts worth not re-discovering
 
 - WSL Ubuntu: Docker 29.1.3 + Compose 2.40.3 working, internet reachable,
   `python3` = 3.14.4 with **no pip/ensurepip** (venv needs the pip bootstrap), no
@@ -182,6 +246,11 @@ WSL path for the same repo: `/mnt/c/Users/firon/Documents/Qoder/2026-10-06/1438d
 - The developer stack (`language-learning-platform` project) may already be running
   on 5432/6379 - the verifier must keep using its own project and auto-chosen ports.
 
-## 6. Known defects / blockers
+## 7. Known defects / blockers
 
-None open. Phase 1-2 is accepted; the work now is Phase 3.
+None open. Phases 1-2 and Phase 3 are accepted; the work now is Phase 4.
+
+Phase 4 reminder: the integration `conftest.py` no longer hardcodes the head revision -
+it compares `alembic_version` with the head the scripts define and insists the history
+stays linear, so a new `0002_*` revision is verified without touching the test. The
+offline migration-immutability check still pins `0001_bootstrap` byte for byte.

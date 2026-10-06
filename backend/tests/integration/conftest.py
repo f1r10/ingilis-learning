@@ -103,6 +103,7 @@ def _rebuild_schema_with_migrations() -> None:
     """
     from alembic import command
     from alembic.config import Config as AlembicConfig
+    from alembic.script import ScriptDirectory
 
     settings = get_settings()
     _guard_disposable_database(settings.database_url)
@@ -137,9 +138,15 @@ def _rebuild_schema_with_migrations() -> None:
         finally:
             await verifier.dispose()
 
+    # Compared with the revision the committed scripts actually define as head, so a
+    # later 0002_* is covered the same way without hardcoding a number here. What must
+    # never change is that the history is linear and the database sits on its tip -
+    # that is the proof the schema came from the migrations and not from the ORM.
+    heads = ScriptDirectory.from_config(cfg).get_heads()
     version = asyncio.run(_verify())
-    assert version == "0001_bootstrap", (
-        f"alembic upgrade head left alembic_version at {version!r}"
+    assert len(heads) == 1, f"migration history has {len(heads)} heads: {heads}"
+    assert version == heads[0], (
+        f"alembic upgrade head left alembic_version at {version!r}, expected {heads[0]!r}"
     )
 
 

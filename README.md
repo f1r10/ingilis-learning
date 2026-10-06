@@ -234,6 +234,26 @@ CRUD /api/v1/groups
 GET/POST /api/v1/groups/{id}/members   list / add a student (409 on duplicate)
 DELETE /api/v1/groups/{id}/members/{student_id}
 GET/PUT /api/v1/settings/branding | /ui | /{category}
+
+GET  /api/v1/questions/types           the type vocabulary the editor is built from
+GET  /api/v1/questions                 q/type/status/level/learning_language/
+                                       context_kind/topic_id/tag_id/reading_id/
+                                       listening_id/source_file_id/has_media/
+                                       view(bank|trash|all)/sort/order/page/page_size
+POST /api/v1/questions                 201, first version stored as v1
+GET/PATCH /api/v1/questions/{id}       PATCH writes a new immutable QuestionVersion
+DELETE /api/v1/questions/{id}          soft delete -> trash (restore keeps history)
+POST /api/v1/questions/{id}/status | /restore | /clone | /taxonomy
+GET  /api/v1/questions/{id}/preview    the learner payload: answer key never leaves
+GET  /api/v1/questions/{id}/versions | /versions/{n}
+POST /api/v1/questions/{id}/grade      scores now, `?at_version=n` scores a frozen version
+POST /api/v1/questions/bulk            status/trash/restore/add_topic/remove_topic/
+                                       add_tag/remove_tag/set_level/set_language,
+                                       answered per id (updated / refused / not_found)
+CRUD /api/v1/topics                    tree with question counts; rename/move refreshes
+                                       the materialised path and refuses sibling clashes
+CRUD /api/v1/tags                      flat, case-insensitively unique, deletable only
+                                       when nothing references it
 ```
 
 Admin sessions are stateless signed cookies, but each embeds a `session_epoch`;
@@ -319,13 +339,37 @@ student side is tuned for mobile.
 
 ## Roadmap (delivery order)
 
-Implemented: **1) shell/branding/localization, 2) auth + users/groups** + the complete
+Implemented: **1) shell/branding/localization, 2) auth + users/groups,
+3) Question Bank + full question engine** + the complete
 schema foundation and adapter/worker skeletons.
 
-Next: 3) Question Bank + full question engine · 4) vocabulary · 5) reading/listening/media
+Next: 4) vocabulary · 5) reading/listening/media
 · 6) catalogs · 7) exams/attempts · 8) document import + review · 9) monitoring/activity
 · 10) analytics · 11) exports/backups · 12) local AI/OCR/transcription · 13) security &
 performance hardening.
+
+## Question engine (Phase 3)
+
+Every question is one row plus one `QuestionVersion` row per saved revision. A edit
+never rewrites history: `current_version` advances, and a past attempt can still be
+re-scored from the snapshot it used (`POST /questions/{id}/grade?at_version=n`).
+
+Types are a registry, not an enum column, so the editor and the learner payload are
+built from `GET /questions/types` (`multiple_choice`, `multi_select`, `true_false`,
+`short_answer`, `gap_fill`, `matching`, `ordering`, `translation`, `essay`). Each type
+brings its own pydantic config (`extra="forbid"`), its own learner payload shape and
+its own grader. Scoring knobs live in columns (`score`, `partial_scoring`,
+`negative_scoring`), not inside the answer key.
+
+Answer keys are never sent to a learner: `public_config()` strips them and replaces
+the match/order elements with opaque refs (`sha256(role\x1findex\x1fvalue)[:12]`), so
+the browser can grade a drag-and-drop without knowing which item was authored first.
+Published matching/ordering items are additionally rotated off the authored order by
+`_least_aligned()`, so the display never betrays the key.
+
+Automatically gradable: everything except `essay`, which is queued for the teacher
+(`requires_manual_grading`). Partial credit exists for `multi_select`, `gap_fill`,
+`matching` and `ordering`, and negative marking for `multi_select` and `matching`.
 
 ## Tests
 
@@ -473,6 +517,17 @@ deletion - through `app.core.storage.ObjectStorage`, the abstraction the app use
 Schema: live introspection of tables/columns/types/nullability/PKs/FKs/uniques/
 indexes/server defaults against the models, including the partial unique index that
 enforces "one ACTIVE access key per student".
+Question bank: a new version row for every edit with the old snapshot still readable,
+grading a frozen `at_version`, all nine types round-tripping through config validation
+and the grader, partial credit and negative marking, the learner payload proven free of
+every answer-key field, preview → grade paths, clone/trash/restore/status rules,
+filter + sort + pagination + search on the list, bulk actions answered per id, audit
+rows, and CSRF/auth refusals on the question routes.
+Taxonomy: topic tree paths and counts, rename/move refreshing the whole subtree,
+sibling name clashes refused on create **and** on rename/move, cycle refusal, delete
+refused while children or questions (including trashed ones) reference the topic, tag
+case-insensitive uniqueness, tag delete refused while in use, the trash staying frozen
+against re-filing.
 
 ```bash
 # Lint - the rule families are pinned in `backend/pyproject.toml` ([tool.ruff.lint])
@@ -485,5 +540,9 @@ cd backend && ruff check app tests migrations scripts
 
 # Frontend type-check (no redesign, compatibility only)
 cd frontend && npm install && npm run typecheck
+
+# Same signal without a local Node toolchain - this is the path used here, because
+# it is the compiler the shipped image actually runs (`tsc -b && vite build`):
+docker build frontend -t language-learning-frontend
 ```
 

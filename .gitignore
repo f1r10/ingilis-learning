@@ -30,3 +30,5 @@ coverage/
 postgres_data/
 redis_data/
 backend/.verify-phase12/
+# Scratch directory for one-off helpers and pytest --basetemp runs
+.tmp/
