@@ -37,7 +37,45 @@ class Conflict(APIError):
 
 class ValidationFailed(APIError):
     def __init__(self, message: str) -> None:
-        super().__init__("validation_failed", message, status.HTTP_422_UNPROCESSABLE_ENTITY)
+        # The numeric code, because Starlette deprecated `HTTP_422_UNPROCESSABLE_ENTITY`
+        # in favour of a renamed alias that older versions do not have.
+        super().__init__("validation_failed", message, 422)
+
+
+#: How many distinct reasons one summary line carries. Forty bad rows in a bulk body is
+#: one mistake repeated, and the first few sentences are what a caller can act on.
+_MAX_SUMMARY_REASONS = 3
+
+
+def _reasons(errors: list[dict]) -> list[str]:
+    """The distinct sentences pydantic gave, with its `Value error, ` prefix removed.
+
+    A custom validator's message arrives as `"Value error, a recording needs a title"`;
+    the prefix names the library, not the problem, and a teacher has no use for it.
+    """
+    out: list[str] = []
+    for err in errors:
+        msg = err.get("msg")
+        if not isinstance(msg, str) or not msg:
+            continue
+        text = msg.removeprefix("Value error, ").strip()
+        if text and text not in out:
+            out.append(text)
+    return out
+
+
+def validation_message(reasons: list[str]) -> str:
+    """A body refusal has to be readable by a client that only looks at `message`.
+
+    The per-field detail lives in `fields[].msg`, so a bare "Request validation failed"
+    told a caller that did not know to go digging nothing they could act on - and the
+    caller is not always this project's own browser.
+    """
+    if not reasons:
+        return "Request validation failed"
+    head = reasons[:_MAX_SUMMARY_REASONS]
+    extra = f" (+{len(reasons) - len(head)} more)" if len(reasons) > len(head) else ""
+    return "Request validation failed: " + "; ".join(head) + extra
 
 
 def register_exception_handlers(app: FastAPI) -> None:
@@ -50,16 +88,17 @@ def register_exception_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(RequestValidationError)
     async def _validation_handler(_: Request, exc: RequestValidationError) -> ORJSONResponse:
+        errors = list(exc.errors())
         fields = [
             {"loc": [str(x) for x in err.get("loc", [])], "msg": err.get("msg"), "type": err.get("type")}
-            for err in exc.errors()
+            for err in errors
         ]
         return ORJSONResponse(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=422,
             content={
                 "error": {
                     "code": "validation_failed",
-                    "message": "Request validation failed",
+                    "message": validation_message(_reasons(errors)),
                     "fields": fields,
                 }
             },

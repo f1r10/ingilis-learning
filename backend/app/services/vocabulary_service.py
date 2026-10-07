@@ -28,9 +28,8 @@ from sqlalchemy import and_, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core import enums, security
+from app.core import constants, enums, security
 from app.models.content import (
-    MediaAsset,
     Tag,
     VocabularyEntry,
     VocabularyExample,
@@ -38,7 +37,7 @@ from app.models.content import (
     vocabulary_tag,
 )
 from app.schemas import vocabulary as v_schemas
-from app.services import audit_service, settings_service
+from app.services import audit_service, media_service, settings_service
 
 SORTABLE = {
     "created_at": VocabularyEntry.created_at,
@@ -49,9 +48,8 @@ SORTABLE = {
     "part_of_speech": VocabularyEntry.part_of_speech,
 }
 
-#: What the picker offers. Free text is still accepted, because a teacher's
-#: "phrasal verb" is real content and refusing it would only push them into notes.
-LEVELS = ["A1", "A2", "B1", "B2", "C1", "C2"]
+#: The CEFR bands, shared with the question and passage screens so one scale files everything.
+LEVELS = constants.CEFR_LEVELS
 PARTS_OF_SPEECH = [
     "noun",
     "verb",
@@ -242,6 +240,11 @@ async def to_read(db: AsyncSession, entry: VocabularyEntry) -> dict:
         antonyms=list(entry.antonyms or []),
         notes=entry.notes,
         audio_asset_id=entry.audio_asset_id,
+        audio_url=(
+            constants.media_content_url(entry.audio_asset_id, for_student=False)
+            if entry.audio_asset_id
+            else None
+        ),
         source_file_id=entry.source_file_id,
         translations=[
             v_schemas.TranslationRead(id=row.id, language=row.language, value=row.value)
@@ -638,6 +641,23 @@ async def _require_exists(db: AsyncSession, model: type, value: uuid.UUID | None
         raise VocabularyError(f"{label} '{value}' does not exist")
 
 
+async def _check_audio(db: AsyncSession, asset_id: uuid.UUID | None) -> None:
+    """The pronunciation attached to a word must be a live audio file.
+
+    A word pointing at a trashed recording passes the foreign key and then fails in front
+    of a class: the learner route will not open a trashed asset, so the card's play button
+    does nothing and the teacher has no way to tell which of sixty words is missing sound.
+    """
+    if asset_id is None:
+        return
+    try:
+        await media_service.require_usable(
+            db, asset_id, kind="audio", subject="a vocabulary entry"
+        )
+    except media_service.MediaError as exc:
+        raise VocabularyError(str(exc)) from None
+
+
 # --------------------------------------------------------------------------- #
 # Writes
 # --------------------------------------------------------------------------- #
@@ -651,7 +671,7 @@ async def create_entry(db: AsyncSession, payload: v_schemas.VocabularyCreate, *,
         db, learning_language=payload.learning_language, translations=payload.translations, examples=payload.examples
     )
     await _reject_duplicate(db, word, payload.learning_language)
-    await _require_exists(db, MediaAsset, payload.audio_asset_id, "media asset")
+    await _check_audio(db, payload.audio_asset_id)
     for tag_id in payload.tag_ids:
         await _require_exists(db, Tag, tag_id, "tag")
 
@@ -729,7 +749,7 @@ async def update_entry(
         db, learning_language=learning_language, translations=translations, examples=examples
     )
     if "audio_asset_id" in changes:
-        await _require_exists(db, MediaAsset, changes["audio_asset_id"], "media asset")
+        await _check_audio(db, changes["audio_asset_id"])
     if changes.get("tag_ids") is not None:
         for tag_id in changes["tag_ids"]:
             await _require_exists(db, Tag, tag_id, "tag")
@@ -881,7 +901,9 @@ async def assign_taxonomy(
 # --------------------------------------------------------------------------- #
 
 
-async def learner_view(db: AsyncSession, entry: VocabularyEntry, *, language: str | None = None) -> dict:
+async def learner_view(
+    db: AsyncSession, entry: VocabularyEntry, *, language: str | None = None, served_to_admin: bool = False
+) -> dict:
     """The entry as a study card. Teacher notes and provenance stay out."""
     translations = (
         await db.execute(
@@ -923,6 +945,11 @@ async def learner_view(db: AsyncSession, entry: VocabularyEntry, *, language: st
             for row in examples
         ],
         has_audio=entry.audio_asset_id is not None,
+        audio_url=(
+            constants.media_content_url(entry.audio_asset_id, for_student=not served_to_admin)
+            if entry.audio_asset_id
+            else None
+        ),
         tags=[v_schemas.TaxonomyRef.model_validate(item) for item in await _tags_of(db, entry.id)],
     ).model_dump(mode="json")
 

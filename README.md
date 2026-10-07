@@ -9,14 +9,17 @@ content / examination / analytics platform. It is **not** hard-coded to English 
 its interface ships in **Azerbaijani, English, Russian and Turkish**. All branding is
 editable in Admin Settings — the platform name is never hard-coded.
 
-> **Current status:** this repository contains the runnable foundation — full domain
-> schema, authentication, users/groups, branding + localization, and the local-first
-> AI/OCR adapter + background-worker skeleton (implementation phases 1–2 of the
-> delivery order). The remaining modules (Question Bank UI, catalog/exam/attempts,
-> import review, monitoring, analytics, exports, backups) build on this foundation
-> **without schema changes** — the complete data model is already in place.
+> **Current status:** delivery phases 1-5 are implemented and accepted — the complete
+> domain schema, authentication, users and groups, branding + localization (az/en/ru/tr),
+> the question bank with the full question engine, the vocabulary bank with learner study
+> cards, and the reading, listening and media modules on S3/MinIO object storage. Still to
+> come: catalogs and practice, exams/attempts and grading, document import and review,
+> monitoring, analytics, exports/backups/restore, the local AI/OCR/STT/translation
+> adapters, and the final security and performance pass. The adapter protocols and the
+> worker exist now as disabled-by-default paths on purpose — the product must stay fully
+> usable with every provider set to `none`.
 >
-> Phase 1–2 is accepted by one command: **`bash scripts/verify_phase12.sh`** (also
+> Acceptance is one command: **`bash scripts/verify_phase12.sh`** (also
 > `make verify-phase12`; see [Tests](#tests)). It is the only run that may claim the
 > database, Redis and object storage work, because unlike `pytest` it treats a skipped
 > infrastructure check as a failure, and it needs no developer `.env` and no `make`.
@@ -45,23 +48,30 @@ persistent data lives in the self-hosted backend.**
 ├── docker-compose.yml        # postgres, redis, minio, backend, worker, frontend
 ├── Makefile                  # dev shortcuts + `make verify-phase12`
 ├── scripts/
-│   └── verify_phase12.sh     # mandatory Phase 1-2 acceptance gate (see Tests)
+│   └── verify_phase12.sh     # mandatory acceptance gate: 13 steps, whole product (see Tests)
 ├── .env.example              # all env-based configuration (copy to .env)
 ├── backend/
 │   ├── app/
-│   │   ├── core/             # config, security (argon2/sessions), db, redis, storage,
-│   │   │                     # enums, middleware (CSRF + request context), rate_limit, exceptions
+│   │   ├── core/             # config, security (argon2/sessions), db, redis, storage
+│   │   │                     # (S3/MinIO adapter), media_types (byte sniffing), enums,
+│   │   │                     # middleware (CSRF + request context), rate_limit, exceptions
 │   │   ├── models/           # full domain schema (identity, system, content, assessment, activity, ops)
-│   │   ├── api/v1/           # routers: auth, admin, students, groups, settings, health
+│   │   ├── api/v1/           # routers: auth, admin, students, groups, settings, health,
+│   │   │                     # questions, topics, tags, vocabulary, media, reading,
+│   │   │                     # listening, and the /student mirrors of them
 │   │   ├── schemas/          # pydantic v2 request/response models
-│   │   ├── services/         # auth, settings/branding, audit
+│   │   ├── services/         # auth, settings/branding, audit, question bank + engine,
+│   │   │                     # taxonomy, vocabulary, media library, passage/reading/listening
 │   │   ├── adapters/         # AI/OCR/STT/translation/dictionary protocols + registry + impls
-│   │   ├── workers/          # arq worker: import pipeline, attempt expiry (authoritative timer), trash purge
+│   │   ├── workers/          # arq worker: import pipeline, attempt expiry (authoritative
+│   │   │                     # timer), trash retention (reports what is due; removal waits
+│   │   │                     # for the Phase 11 backup that makes it survivable)
 │   │   └── main.py           # FastAPI app factory
-│   ├── migrations/           # alembic env + bootstrap schema revision
-│   └── scripts/seed.py       # minimal dev seed (admin + languages + branding defaults)
+│   ├── migrations/           # alembic env + frozen bootstrap + 0002..0004
+│   └── scripts/seed.py       # minimal dev seed (bootstrap admin + languages + branding defaults)
 └── frontend/
-    └── src/                  # api client, i18n (az/en/ru/tr), auth/session, branding shell, pages
+    └── src/                  # api client, i18n (az/en/ru/tr), branding shell, teacher and
+                              # student pages: banks, editors, media library, reading, listening
 ```
 
 ### Key domain invariants (already encoded in the model)
@@ -181,12 +191,17 @@ native `CREATE TYPE` and no `CHECK` constraint, so a new enum member never needs
 migration. Add future changes as **granular autogenerated revisions**; never hand-edit
 the bootstrap revision once real deployments exist.
 
-The history is linear and short by design: `0001_bootstrap` then
-`0002_vocabulary_word_unique`. The guard scripts replay every revision in order
-without importing the ORM (`tests/integration/migration_replay.py`), so the bootstrap
-counts stay pinned at 45 tables / 90 indexes while the **live** floors grow with each
-phase, and a downgrade/upgrade round trip through the acceptance gate proves a Phase 4
-index survives being dropped and rebuilt.
+The history is linear and short by design: `0001_bootstrap`,
+`0002_vocabulary_word_unique`, `0003_membership_and_checksum` (the two set-membership
+tables plus `uq_media_asset_checksum`) and `0004_media_reference_indexes`. The guard
+scripts replay every revision in order without importing the ORM
+(`tests/migration_replay.py`), so the bootstrap counts stay pinned at 45 tables / 90
+indexes while the **live** floors grow with each phase - after Phase 5 a fresh process
+reading the migrated database sees 47 model tables (48 with `alembic_version`), 486
+columns, 61 foreign keys and 148 indexes. The acceptance gate walks the chain in both
+directions for real: `downgrade 0001_bootstrap` proves each later revision removes only
+what it added, then `upgrade head` rebuilds each index over rows staged underneath it and
+refuses the duplicate the index exists to refuse.
 
 
 ---
@@ -279,6 +294,41 @@ POST /api/v1/vocabulary/bulk           status/trash/restore/add_tag/remove_tag/s
 GET  /api/v1/student/vocabulary        ready, alive words; search stays on the word
 GET  /api/v1/student/vocabulary/meta   the learner's own filter options
 GET  /api/v1/student/vocabulary/{id}   study card; a draft or trashed word is 404
+
+GET  /api/v1/media/meta                formats accepted and size ceilings per kind
+GET  /api/v1/media                     q/kind/source_origin/view(bank|trash|all)/sort
+POST /api/v1/media                     multipart upload; the bytes decide the kind
+GET/PATCH/DELETE /api/v1/media/{id}    read / caption or report measured duration+size /
+                                       soft trash (refused while live content needs it)
+POST /api/v1/media/{id}/restore | /bulk
+GET  /api/v1/media/{id}/content        the file's bytes, one Range honoured (teacher)
+GET  /api/v1/student/media/{id}/content the same file, only when ready content points at it
+
+GET  /api/v1/reading/meta              languages, levels, layouts, sort names, caps
+GET  /api/v1/reading                   q/language/level/status/layout/view/sort
+POST /api/v1/reading                   201; word_count counted from the body, not sent in
+GET/PATCH/DELETE /api/v1/reading/{id}  PATCH touches only what it sends; a body carrying
+                                       `word_count` is refused, and trash keeps the questions
+POST /api/v1/reading/{id}/status | /restore | /bulk
+GET  /api/v1/reading/{id}/sets         the sets with the questions filed under each
+POST /api/v1/reading/{id}/sets         append a set
+POST /api/v1/reading/{id}/sets/reorder renumber the sets (must name every one)
+POST /api/v1/reading/sets/{set_id}/questions  file exactly these questions, in order
+PATCH/DELETE /api/v1/reading/sets/{set_id}     rename / remove the grouping, which sends
+                                       its questions back to the pool
+GET  /api/v1/reading/{id}/preview      the learner's reading block, on the teacher's screen
+GET  /api/v1/student/reading | /meta | /{id}   ready texts; draft questions excluded
+
+GET  /api/v1/listening/meta            languages, levels, replay rules, sort names
+GET  /api/v1/listening                 q/language/level/status/has_audio/show_transcript
+POST /api/v1/listening                 names a file already in the library
+GET/PATCH/DELETE /api/v1/listening/{id} PATCH never claims transcript provenance
+POST /api/v1/listening/{id}/status     refused when nothing could be heard
+POST /api/v1/listening/{id}/restore | /bulk
+GET/POST /api/v1/listening/{id}/sets | /sets/reorder
+PATCH/DELETE /api/v1/listening/sets/{set_id}    a block may be a slice of the recording
+GET  /api/v1/listening/{id}/preview    the player a learner would get
+GET  /api/v1/student/listening | /meta | /{id}  ready recordings; transcript only if allowed
 ```
 
 Admin sessions are stateless signed cookies, but each embeds a `session_epoch`;
@@ -365,11 +415,11 @@ student side is tuned for mobile.
 ## Roadmap (delivery order)
 
 Implemented: **1) shell/branding/localization, 2) auth + users/groups,
-3) Question Bank + full question engine, 4) vocabulary bank and study cards** + the
+3) Question Bank + full question engine, 4) vocabulary bank and study cards,
+5) reading, listening and the media library on object storage** + the
 complete schema foundation and adapter/worker skeletons.
 
-Next: 5) reading/listening/media
-· 6) catalogs · 7) exams/attempts · 8) document import + review · 9) monitoring/activity
+Next: 6) catalogs · 7) exams/attempts · 8) document import + review · 9) monitoring/activity
 · 10) analytics · 11) exports/backups · 12) local AI/OCR/transcription · 13) security &
 performance hardening.
 
@@ -428,6 +478,89 @@ note. A draft or trashed word answers 404 on the learner surface.
 The word bank and the question bank share tags, and both counts are shown before a tag
 is deleted (`{questions, words}`), because deletion is refused while either bank
 references it.
+
+## Reading, listening and media (Phase 5)
+
+**Uploading is the only way a file enters the library, and its bytes decide what it is.**
+`POST /media` reads the head of the file and stores it only if `app.core/media_types.py`
+can name it: 17 formats (png, jpeg, gif, bmp, webp, tiff, mp3, wav, aiff, flac, ogg, m4a,
+mp4, mov, webm, mkv, avi), each under a per-kind ceiling (15 MB image, 200 MB audio,
+700 MB video) that `GET /media/meta` publishes so the browser refuses an oversized file
+before sending it. The browser's `Content-Type`, the filename and the extension are all
+discarded: the object key is generated (`<namespace>/<32 hex>.<ext>`), so a file called
+`../../../../etc/passwd.png` cannot steer where it lands, and a PNG wearing a `.mp4` name
+is stored as the image it is. Identical bytes are one asset - the sha256 is computed while
+the upload spools, matched against the live rows, and for two requests that arrive together
+settled by the partial unique index `uq_media_asset_checksum` from
+`0003_membership_and_checksum`. The second teacher gets the existing asset and is told it
+was already there, because that is information rather than a failure.
+
+**Nothing is served around the application.** The bucket is private, no object is public
+and no browser is ever handed a presigned URL. Every byte leaves through
+`GET /media/{id}/content` (teacher) or `GET /student/media/{id}/content` (learner), each
+honouring one byte range by asking the store for exactly that slice, and a learner may read
+an asset only while some *ready*, un-trashed word, recording or question points at it.
+Duration and pixel dimensions are reported by the player through `PATCH /media/{id}` and
+stay `null` until it does: a number invented by a half-parser would end up on a learner's
+timer.
+
+**A reading and a listening are the same shape twice** - a body of content with ordered
+sets, each holding some of the questions bound to it (`passage_service`, driven by a
+`PassageKind` descriptor). Three rules do the real work. Filing a question under a set
+writes a membership row and never touches `Question`, so reorganising a lesson cannot
+append a dozen `QuestionVersion` snapshots of questions that did not change. A question
+answers exactly one block of one passage: `question_id` is unique in the membership table,
+so filing it in a second set *moves* it, and the response says so. And only a question
+already bound to this passage (`context_kind` plus `reading_id` / `listening_id`) may be
+filed in it - the binding is what stops a reading question from degrading into a loose one.
+
+Derived fields are derived: `word_count` is counted from the text in the same transaction
+(a `PATCH` that sends one is refused, not ignored), and `transcript_source` can only ever
+come out as `manual` or `absent` here, because `imported` belongs to the Phase 8 importer
+and `auto` to the Phase 12 speech adapter. Going to `ready` is refused for a listening with no live
+recording and no transcript - on its own or inside a bulk action - since an exercise with
+nothing to hear is what a class discovers first. Clearing a transcript clears its cue
+lines with it.
+
+Learners get the passage plus only answerable questions: the gate is *ready and not
+trashed* for the text or recording **and** for every question inside it, the reading body
+is rendered once above its questions instead of inside each of them, and a listening's
+transcript is `null` unless `show_transcript` was allowed - a listening exercise with its
+words on the screen is a reading exercise, and the teacher decides which one this is.
+`layout` (`above`, `split`, `tabbed`) is stored rather than inferred, because on a phone it
+is a different exercise.
+
+Trash is soft everywhere and the file is never thrown away with it: trashing a text or a
+recording leaves its bound questions in the bank (they simply stop being served), and
+trashing an asset is refused while live content references it, naming how many of each
+kind. Playback rules (`replay_limit`, `allow_pause`, `allow_seek`) are stored as set and
+served as delivered, so a player cannot quietly rewrite the conditions of the exercise.
+This closes the Phase 4 gap: a word's pronunciation recording can now be attached from the
+media picker and reaches the study card through the student route.
+
+**The learner's player enforces the rules it was handed, and stops at the boundary.**
+`replay_limit` counts the listens *after* the first one, so the budget is `1 + limit`
+listenings; the page treats it as spent as soon as the last allowed one has started, which
+is what removes the play affordance before an extra one can be offered. Reading the budget
+as spent only after the next listening had already begun handed the class one replay more
+than the teacher had written. `allow_seek` and `allow_pause` decide whether the browser's
+own transport controls are drawn at all: a control the learner is not allowed to use is not
+a control worth showing, and a player that still invites a fourth listening under a notice
+that says there is none left is a decoration rather than a rule. The count is kept on the
+page, so reloading restarts it - that is honest for a browse-anytime surface, and it is why
+the replay clock belongs to the attempt engine from Phase 7 on.
+
+**A learner's address asks for a learner's session.** The app restores whoever is holding
+the cookie by probing the role endpoint that the address implies: a `/student…` URL tries
+the learner endpoint first and a teacher URL tries the teacher endpoint first, falling
+through to the other role before a browser is called signed out. A fixed order meant that
+every learner page load carried one guaranteed 401 in its log, which read like a broken
+session to anyone who opened the network panel.
+
+Migrations: `0003_membership_and_checksum` (the two set-membership tables with their
+unique and ordering indexes, and `uq_media_asset_checksum`) and
+`0004_media_reference_indexes` (the three FK-side indexes media joins on). `0001_bootstrap`
+and the Phase 3/4 revisions are untouched, and both new revisions downgrade.
 
 ## Tests
 

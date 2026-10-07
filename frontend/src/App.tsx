@@ -13,6 +13,13 @@ import Topics from "./pages/Topics";
 import Vocabulary from "./pages/Vocabulary";
 import VocabularyEditor from "./pages/VocabularyEditor";
 import StudentVocabulary from "./pages/StudentVocabulary";
+import Reading from "./pages/Reading";
+import ReadingEditor from "./pages/ReadingEditor";
+import Listenings from "./pages/Listenings";
+import ListeningEditor from "./pages/ListeningEditor";
+import MediaLibrary from "./pages/MediaLibrary";
+import StudentReading from "./pages/StudentReading";
+import StudentListening from "./pages/StudentListening";
 
 function RequireAuth({ children, admin }: { children: React.ReactNode; admin?: boolean }) {
   const { subject, ready } = useApp();
@@ -45,6 +52,13 @@ export default function App() {
           <Route path="/vocabulary/new" element={<VocabularyEditor />} />
           <Route path="/vocabulary/:id" element={<VocabularyEditor />} />
           <Route path="/topics" element={<Topics />} />
+          <Route path="/reading" element={<Reading />} />
+          <Route path="/reading/new" element={<ReadingEditor />} />
+          <Route path="/reading/:id" element={<ReadingEditor />} />
+          <Route path="/listening" element={<Listenings />} />
+          <Route path="/listening/new" element={<ListeningEditor />} />
+          <Route path="/listening/:id" element={<ListeningEditor />} />
+          <Route path="/media" element={<MediaLibrary />} />
           <Route path="/settings" element={<Settings />} />
         </Route>
         <Route
@@ -56,6 +70,8 @@ export default function App() {
         >
           <Route path="/student" element={<StudentDashboard />} />
           <Route path="/student/vocabulary" element={<StudentVocabulary />} />
+          <Route path="/student/reading" element={<StudentReading />} />
+          <Route path="/student/listening" element={<StudentListening />} />
         </Route>
         <Route path="*" element={<Navigate to="/login" replace />} />
       </Routes>

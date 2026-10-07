@@ -82,12 +82,23 @@ def _sql_fks(sql: str) -> set[tuple]:
 
 
 def _sql_indexes(sql: str) -> dict[str, tuple[str, tuple[str, ...], bool, str]]:
+    """The indexes a rendered `upgrade head --sql` leaves behind, by name.
+
+    The script is a history, not a schema: an index one revision creates and a later
+    revision drops (directly, or by dropping its table) is not part of the result. The
+    comparison against the ORM is about the state after the last statement, so the
+    drops have to be taken back out - otherwise a granular revision would look like
+    drift whenever it replaces an index.
+    """
     out: dict[str, tuple[str, tuple[str, ...], bool, str]] = {}
     for unique, name, table, cols, where in _INDEX_RE.findall(sql):
         parsed = tuple(c.strip().strip('"') for c in cols.split(","))
         normalised = "" if where is None else " ".join(where.split())
         out[name] = (table, parsed, bool(unique), normalised)
-    return out
+    for name in _DROP_INDEX_RE.findall(sql):
+        out.pop(name, None)
+    dropped_tables = set(_DROP_TABLE_RE.findall(sql))
+    return {name: value for name, value in out.items() if value[0] not in dropped_tables}
 
 
 @pytest.fixture(scope="module")
@@ -123,8 +134,12 @@ def test_rendered_statement_counts_match_the_schema(
     rather than this test.
     """
     tables = [t for t, _ in _TABLE_BLOCK_RE.findall(upgrade_sql) if t != "alembic_version"]
-    indexes = _INDEX_RE.findall(upgrade_sql)
-    fks = _FK_RE.findall("".join(b for _, b in _TABLE_BLOCK_RE.findall(upgrade_sql)))
+    dropped_tables = set(_DROP_TABLE_RE.findall(upgrade_sql))
+    tables = [t for t in tables if t not in dropped_tables]
+    indexes = _sql_indexes(upgrade_sql)
+    fks = _FK_RE.findall(
+        "".join(b for t, b in _TABLE_BLOCK_RE.findall(upgrade_sql) if t not in dropped_tables)
+    )
     uniques = _UNIQUE_RE.findall(upgrade_sql)
     pks = _PK_RE.findall(upgrade_sql)
 
@@ -170,7 +185,7 @@ def test_rendered_indexes_match_orm(upgrade_sql: str, app_metadata: MetaData) ->
 def test_unique_columns_render_as_unique_indexes(
     upgrade_sql: str, app_metadata: MetaData
 ) -> None:
-    rendered_unique = {m[1] for m in _INDEX_RE.findall(upgrade_sql) if m[0]}
+    rendered_unique = {name for name, value in _sql_indexes(upgrade_sql).items() if value[2]}
     orm_unique = {
         idx.name for t in app_metadata.tables.values() for idx in t.indexes if idx.unique
     }
@@ -182,7 +197,12 @@ def test_downgrade_renders_every_drop(
     downgrade_sql: str, app_metadata: MetaData
 ) -> None:
     assert set(_DROP_TABLE_RE.findall(downgrade_sql)) == set(app_metadata.tables)
-    assert set(_DROP_INDEX_RE.findall(downgrade_sql)) == set(index_tuples(app_metadata))
+    # An index a downgrade *rebuilds* (0003 puts bootstrap's plain checksum index back
+    # before bootstrap's own downgrade drops it) is not a drop the reversal is
+    # responsible for, so the two statements cancel out. What must not cancel out is an
+    # index the schema still declares: every one of those has to be dropped.
+    rebuilt = {name for _u, name, _t, _c, _w in _INDEX_RE.findall(downgrade_sql)}
+    assert set(_DROP_INDEX_RE.findall(downgrade_sql)) - rebuilt == set(index_tuples(app_metadata))
 
 
 def test_offline_sql_is_pure_ddl(upgrade_sql: str) -> None:
@@ -219,3 +239,19 @@ def test_every_committed_revision_appears_in_the_rendered_chain(
     assert "CREATE UNIQUE INDEX uq_vocabulary_word_language ON vocabulary_entry" in upgrade_sql
     assert "WHERE deleted_at IS NULL" in upgrade_sql
     assert "DROP INDEX uq_vocabulary_word_language" in downgrade_sql
+
+    assert "CREATE TABLE reading_set_question" in upgrade_sql
+    assert "CREATE TABLE listening_set_question" in upgrade_sql
+    assert "CREATE UNIQUE INDEX uq_media_asset_checksum ON media_asset" in upgrade_sql
+    assert "DROP INDEX uq_media_asset_checksum" in downgrade_sql
+    assert "DROP TABLE reading_set_question" in downgrade_sql
+    assert "DROP TABLE listening_set_question" in downgrade_sql
+
+    # 0004: the reverse lookups the media library performs.
+    for index, table in (
+        ("ix_question_media_asset_id", "question"),
+        ("ix_listening_media_asset_id", "listening"),
+        ("ix_vocabulary_entry_audio_asset_id", "vocabulary_entry"),
+    ):
+        assert f"CREATE INDEX {index} ON {table}" in upgrade_sql, f"{index} never rendered"
+        assert f"DROP INDEX {index}" in downgrade_sql, f"{index} never reversed"

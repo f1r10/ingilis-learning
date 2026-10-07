@@ -207,7 +207,7 @@ async def preview_for_learner(
     to publish it.
     """
     entry = await _load(db, entry_id)
-    return await vocabulary_service.learner_view(db, entry, language=language)
+    return await vocabulary_service.learner_view(db, entry, language=language, served_to_admin=True)
 
 
 @router.post("/{entry_id}/taxonomy", response_model=None)

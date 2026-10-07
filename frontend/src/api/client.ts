@@ -4,6 +4,11 @@
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL as string) || "/api/v1";
 
+/** Turn a served `content_url` into something an `<img>` or `<audio>` can request. The
+ * backend hands out a path and never a host, so an object-store URL cannot be followed. */
+export const mediaUrl = (contentUrl: string | null | undefined) =>
+  contentUrl ? `${API_BASE}${contentUrl}` : null;
+
 const CSRF_COOKIE = "llp_csrf";
 const CSRF_HEADER = "X-CSRF-Token";
 
@@ -34,7 +39,9 @@ async function request<T>(
   const method = (options.method || "GET").toUpperCase();
   const headers = new Headers(options.headers);
   if (method !== "GET" && method !== "HEAD") {
-    headers.set("Content-Type", "application/json");
+    // A multipart body brings its own boundary; typing a content type over it would
+    // leave the server unable to find the file.
+    if (!(options.body instanceof FormData)) headers.set("Content-Type", "application/json");
     const csrf = readCookie(CSRF_COOKIE);
     if (csrf) headers.set(CSRF_HEADER, csrf);
   }
@@ -53,8 +60,10 @@ async function request<T>(
   if (!resp.ok) {
     const err = data?.error || {};
     const fields = fieldNames(err.fields);
-    const base = err.message || resp.statusText;
-    throw new ApiError(resp.status, err.code || "error", fields.length ? `${base} (${fields.join(", ")})` : base, fields);
+    // The server already summarises each field's reason in `message`, so the paths are
+    // only worth printing when there was no reason to print.
+    const suffix = fields.length && !fieldReasons(err.fields).length ? ` (${fields.join(", ")})` : "";
+    throw new ApiError(resp.status, err.code || "error", `${err.message || resp.statusText}${suffix}`, fields);
   }
   return data as T;
 }
@@ -72,10 +81,19 @@ function fieldNames(raw: unknown): string[] {
   return Array.from(new Set(names.filter(Boolean)));
 }
 
+/** The reasons a 422 carries per field; empty when the failure was not a body refusal. */
+function fieldReasons(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  const msgs = raw.map((item) => (typeof (item as any)?.msg === "string" ? (item as any).msg.trim() : ""));
+  return Array.from(new Set(msgs.filter(Boolean)));
+}
+
 export const api = {
   get: <T>(path: string) => request<T>(path),
   post: <T>(path: string, body?: unknown) =>
     request<T>(path, { method: "POST", body: body ? JSON.stringify(body) : undefined }),
+  /** Upload a file: the browser sets the multipart boundary itself. */
+  postForm: <T>(path: string, form: FormData) => request<T>(path, { method: "POST", body: form }),
   put: <T>(path: string, body?: unknown) =>
     request<T>(path, { method: "PUT", body: body ? JSON.stringify(body) : undefined }),
   patch: <T>(path: string, body?: unknown) =>

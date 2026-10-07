@@ -332,16 +332,17 @@ async def test_an_unknown_type_is_refused(client):
 
 async def test_unknown_taxonomy_and_media_references_are_refused(client):
     missing = str(uuid.uuid4())
+    # The two refusals are worded differently on purpose: a taxonomy id is just not there,
+    # while a missing file has a next step the teacher can take.
     cases = (
-        ({"topic_ids": [missing]}, "topic"),
-        ({"tag_ids": [missing]}, "tag"),
-        ({"media_asset_id": missing}, "media asset"),
+        ({"topic_ids": [missing]}, f"topic '{missing}' does not exist"),
+        ({"tag_ids": [missing]}, f"tag '{missing}' does not exist"),
+        ({"media_asset_id": missing}, "no file with that id is in the library"),
     )
-    for extra, word in cases:
+    for extra, phrase in cases:
         resp = await client.post("/api/v1/questions", json={**choice_body(), **extra})
         assert resp.status_code == 422, extra
-        assert word in error_of(resp)["message"]
-        assert "does not exist" in error_of(resp)["message"]
+        assert phrase in error_of(resp)["message"], error_of(resp)["message"]
 
     edited = await _create(client, choice_body())
     resp = await client.patch(f"/api/v1/questions/{edited['id']}", json={"topic_ids": [missing]})
@@ -1135,7 +1136,14 @@ async def test_a_question_with_media_is_reported_to_the_learner(client):
     created = await _create(client, choice_body(media_asset_id=asset_id))
     assert created["media_asset_id"] == asset_id
     preview = (await client.get(f"/api/v1/questions/{created['id']}/preview")).json()
-    assert preview["media_asset_id"] == asset_id
+    # The preview panel is the learner's projection - a player, not the library's row, and
+    # nothing that says where the file lives. Only the door is the teacher's own, because
+    # the browser reading this answer holds an admin session and cannot use a student one.
+    assert preview["media"]["id"] == asset_id
+    assert preview["media"]["content_url"] == f"/media/{asset_id}/content"
+    assert preview["media"]["content_url"].startswith("/media/"), "not a storage address"
+    assert set(preview["media"]) == {"id", "kind", "mime_type", "duration_seconds", "width", "height", "content_url"}
+    assert "media_asset_id" not in preview, "the asset id is the teacher's bookkeeping"
     assert (await client.get("/api/v1/questions", params={"has_media": True})).json()["total"] == 1
     assert (await client.get("/api/v1/questions")).json()["items"][0]["has_media"] is True
     assert created["source_file_id"] is None

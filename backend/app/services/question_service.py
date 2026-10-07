@@ -20,7 +20,7 @@ from typing import Any
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core import enums, security
+from app.core import constants, enums, security
 from app.models.content import (
     Listening,
     MediaAsset,
@@ -33,7 +33,7 @@ from app.models.content import (
     Topic,
 )
 from app.schemas import question as q_schemas
-from app.services import audit_service, question_engine
+from app.services import audit_service, media_service, passage_service, question_engine
 
 # Changing any of these is a content change and produces a new version. Lifecycle
 # (`status`) and classification (topics/tags) are handled by their own endpoints and
@@ -121,34 +121,93 @@ async def _require_exists(db: AsyncSession, model: type, value: uuid.UUID | None
         raise QuestionInputError(f"{label} '{value}' does not exist")
 
 
+#: Which passage type a dependent question binds to, for each context word a teacher picks.
+_CONTEXT_PASSAGES = {
+    enums.QuestionContext.READING: passage_service.READING,
+    enums.QuestionContext.LISTENING: passage_service.LISTENING,
+}
+
+
 async def _check_context(
     db: AsyncSession,
     *,
     context_kind: enums.QuestionContext,
     reading_id: uuid.UUID | None,
     listening_id: uuid.UUID | None,
+    question_id: uuid.UUID | None = None,
 ) -> None:
     """A dependent question must name its context, and only its context.
 
-    This is what keeps a reading question from silently degrading into a loose
-    question the moment its passage is replaced.
+    This is what keeps a reading question from silently degrading into a loose question
+    the moment its passage is replaced.
+
+    `question_id` turns on the second half of the same rule: a question already filed
+    under a set of some passage cannot be re-pointed at a different text from here. The
+    binding and the filing are two rows that have to agree, and re-binding from the
+    question screen would leave that set holding a question about a passage it is no
+    longer attached to. Moving a filed question between passages means taking it out of
+    the set first, on the passage screen, where the teacher can see both sides of it.
     """
-    if context_kind == enums.QuestionContext.INDEPENDENT:
-        if reading_id or listening_id:
-            raise QuestionInputError("an independent question cannot carry a reading or listening id")
+    try:
+        if context_kind == enums.QuestionContext.INDEPENDENT:
+            if reading_id or listening_id:
+                raise QuestionInputError("an independent question cannot carry a reading or listening id")
+            await _refuse_rebind(db, question_id, kind=None, passage_id=None)
+            return
+        kind = _CONTEXT_PASSAGES[context_kind]
+        if context_kind == enums.QuestionContext.READING:
+            if listening_id:
+                raise QuestionInputError("a reading-bound question must not also carry a listening_id")
+            if not reading_id:
+                raise QuestionInputError("a reading-bound question needs a reading_id")
+            passage_id = reading_id
+        else:
+            if reading_id:
+                raise QuestionInputError("a listening-bound question must not also carry a reading_id")
+            if not listening_id:
+                raise QuestionInputError("a listening-bound question needs a listening_id")
+            passage_id = listening_id
+        await passage_service.require_bindable_passage(db, kind, passage_id)
+        await _refuse_rebind(db, question_id, kind=kind, passage_id=passage_id)
+    except passage_service.PassageError as exc:
+        raise QuestionInputError(str(exc)) from None
+
+
+async def _refuse_rebind(
+    db: AsyncSession,
+    question_id: uuid.UUID | None,
+    *,
+    kind: passage_service.PassageKind | None,
+    passage_id: uuid.UUID | None,
+) -> None:
+    """Stop a filed question from being moved to another passage behind its set's back."""
+    if question_id is None:
         return
-    if context_kind == enums.QuestionContext.READING:
-        if listening_id:
-            raise QuestionInputError("a reading-bound question must not also carry a listening_id")
-        if not reading_id:
-            raise QuestionInputError("a reading-bound question needs a reading_id")
-        await _require_exists(db, Reading, reading_id, "reading")
+    filed = await passage_service.filed_under(db, question_id)
+    if filed is None:
         return
-    if reading_id:
-        raise QuestionInputError("a listening-bound question must not also carry a reading_id")
-    if not listening_id:
-        raise QuestionInputError("a listening-bound question needs a listening_id")
-    await _require_exists(db, Listening, listening_id, "listening")
+    filed_kind, _filed_passage, filed_title = filed
+    if kind is not None and filed_kind is kind and _filed_passage == passage_id:
+        return
+    where = f'"{filed_title}" of its {filed_kind.label}' if filed_title else f"an {filed_kind.label}"
+    raise QuestionInputError(
+        f"this question is filed under {where} - remove it from that set before re-binding it"
+    )
+
+
+async def _check_media(db: AsyncSession, asset_id: uuid.UUID | None) -> None:
+    """A question's picture must be a live image, not merely a row with a foreign key.
+
+    `served_to_student` will not open a trashed asset, so a question pointing at one is a
+    blank box on a learner's screen - and a file the library keeps as something else is a
+    blank box shaped like a photograph.
+    """
+    if asset_id is None:
+        return
+    try:
+        await media_service.require_usable(db, asset_id, kind="image", subject="a question")
+    except media_service.MediaError as exc:
+        raise QuestionInputError(str(exc)) from None
 
 
 # --------------------------------------------------------------------------- #
@@ -228,6 +287,7 @@ async def _append_version(db: AsyncSession, question: Question, *, change_note: 
 
 async def to_read(db: AsyncSession, question: Question) -> dict:
     topics, tags = await _taxonomy_of(db, question.id)
+    filed = await passage_service.filed_under(db, question.id)
     return q_schemas.QuestionRead(
         id=question.id,
         type=question.type,
@@ -245,6 +305,18 @@ async def to_read(db: AsyncSession, question: Question) -> dict:
         explanation=question.explanation,
         teacher_notes=question.teacher_notes,
         media_asset_id=question.media_asset_id,
+        media_url=(
+            constants.media_content_url(question.media_asset_id, for_student=False)
+            if question.media_asset_id
+            else None
+        ),
+        filed_in=(
+            q_schemas.QuestionFiling(
+                kind=filed[0].name, passage_id=filed[1], set_title=filed[2]
+            )
+            if filed
+            else None
+        ),
         config=question.config,
         current_version=question.current_version,
         topics=[q_schemas.TaxonomyRef.model_validate(t) for t in topics],
@@ -466,7 +538,7 @@ async def create_question(
     await _check_context(
         db, context_kind=context, reading_id=payload.reading_id, listening_id=payload.listening_id
     )
-    await _require_exists(db, MediaAsset, payload.media_asset_id, "media asset")
+    await _check_media(db, payload.media_asset_id)
     for topic_id in payload.topic_ids:
         await _require_exists(db, Topic, topic_id, "topic")
     for tag_id in payload.tag_ids:
@@ -528,9 +600,13 @@ async def update_question(
     merged_reading = content_patch.get("reading_id", question.reading_id)
     merged_listening = content_patch.get("listening_id", question.listening_id)
     await _check_context(
-        db, context_kind=merged_context, reading_id=merged_reading, listening_id=merged_listening
+        db,
+        context_kind=merged_context,
+        reading_id=merged_reading,
+        listening_id=merged_listening,
+        question_id=question.id,
     )
-    await _require_exists(db, MediaAsset, content_patch.get("media_asset_id", question.media_asset_id), "media asset")
+    await _check_media(db, content_patch.get("media_asset_id", question.media_asset_id))
     if changes.get("topic_ids") is not None:
         for topic_id in changes["topic_ids"]:
             await _require_exists(db, Topic, topic_id, "topic")
@@ -761,9 +837,45 @@ async def get_version(db: AsyncSession, question_id: uuid.UUID, version: int) ->
 # --------------------------------------------------------------------------- #
 
 
-async def student_view(db: AsyncSession, question: Question) -> dict:
-    """What a learner sees: the prompt and a type payload with the answer key removed."""
+async def student_view(
+    db: AsyncSession,
+    question: Question,
+    *,
+    include_context: bool = True,
+    served_to_admin: bool = False,
+) -> dict:
+    """What a learner sees: the prompt and a type payload with the answer key removed.
+
+    `include_context` is off when the caller has already delivered the passage - a
+    reading's own screen renders the text once above the questions, and repeating a
+    600-word document inside every one of its twelve items is the same page twelve times.
+    The questions endpoint, which serves one question on its own, leaves it on: a learner
+    who is shown a reading question without its text is being asked about a passage they
+    cannot see.
+    """
     desc = question_engine.descriptor(question.type)
+    payload: dict[str, Any] = {
+        "id": str(question.id),
+        "type": question.type,
+        "prompt": question.prompt,
+        "score": question.score,
+        "answer_widget": desc.answer_widget,
+        "requires_manual_grading": not desc.gradable_automatically,
+        "config": question_engine.public_config(question.type, question.config),
+        "explanation_available": bool(question.explanation),
+    }
+    if question.media_asset_id:
+        # The learner is given the student path, not the id alone: which file this is, and
+        # whether they may have it, is decided per request by their own session.
+        asset = await db.get(MediaAsset, question.media_asset_id)
+        if asset is not None and asset.deleted_at is None:
+            payload["media"] = await media_service.learner_view(asset, served_to_admin=served_to_admin)
+    if include_context:
+        payload["context"] = await _learner_context(db, question, served_to_admin=served_to_admin)
+    return payload
+
+
+async def _learner_context(db: AsyncSession, question: Question, *, served_to_admin: bool = False) -> dict:
     context: dict[str, Any] = {"kind": _label_of(question.context_kind)}
     if question.reading_id:
         reading = await db.get(Reading, question.reading_id)
@@ -779,10 +891,15 @@ async def student_view(db: AsyncSession, question: Question) -> dict:
     if question.listening_id:
         listening = await db.get(Listening, question.listening_id)
         if listening is not None:
+            audio = None
+            if listening.media_asset_id:
+                asset = await db.get(MediaAsset, listening.media_asset_id)
+                if asset is not None and asset.deleted_at is None:
+                    audio = await media_service.learner_view(asset, served_to_admin=served_to_admin)
             context["listening"] = {
                 "id": str(listening.id),
                 "title": listening.title,
-                "media_asset_id": str(listening.media_asset_id) if listening.media_asset_id else None,
+                "audio": audio,
                 "replay_limit": listening.replay_limit,
                 "allow_pause": listening.allow_pause,
                 "allow_seek": listening.allow_seek,
@@ -791,18 +908,7 @@ async def student_view(db: AsyncSession, question: Question) -> dict:
                 "transcript": listening.transcript if listening.show_transcript else None,
                 "show_transcript": listening.show_transcript,
             }
-    return {
-        "id": str(question.id),
-        "type": question.type,
-        "prompt": question.prompt,
-        "score": question.score,
-        "answer_widget": desc.answer_widget,
-        "requires_manual_grading": not desc.gradable_automatically,
-        "config": question_engine.public_config(question.type, question.config),
-        "context": context,
-        "media_asset_id": str(question.media_asset_id) if question.media_asset_id else None,
-        "explanation_available": bool(question.explanation),
-    }
+    return context
 
 
 async def grade_response(

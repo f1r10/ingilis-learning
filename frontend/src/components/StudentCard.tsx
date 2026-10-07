@@ -2,10 +2,12 @@
 // provenance, no lifecycle state. The teacher's preview panel and the student's own
 // screen render this one component, so what the teacher sees is what the student gets.
 import { useTranslation } from "react-i18next";
+import { mediaUrl } from "../api/client";
 import type { StudyCard } from "../api/vocabulary";
 
 export default function StudentCard({ card }: { card: StudyCard }) {
   const { t } = useTranslation();
+  const audio = mediaUrl(card.audio_url);
   return (
     <div className="card stack">
       <div className="row">
@@ -15,6 +17,11 @@ export default function StudentCard({ card }: { card: StudyCard }) {
         {card.part_of_speech ? <span className="chip">{card.part_of_speech}</span> : null}
         {card.level ? <span className="chip">{card.level}</span> : null}
       </div>
+
+      {/* The address is written by the server and a student session authorises its bytes,
+          so the card plays the library's file without ever naming the store. */}
+      {card.has_audio && audio ? <audio src={audio} controls style={{ width: "100%" }} /> : null}
+      {card.has_audio && !audio ? <p className="small muted">{t("media.not_available")}</p> : null}
 
       {card.definition ? <p style={{ margin: 0 }}>{card.definition}</p> : null}
 

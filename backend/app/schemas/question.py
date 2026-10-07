@@ -80,6 +80,14 @@ class GradeRequest(BaseModel):
     response: dict | list | str | int | float | bool | None = None
 
 
+class QuestionFiling(BaseModel):
+    """Where a question sits inside a passage: which type, which text, which set."""
+
+    kind: str
+    passage_id: UUID
+    set_title: str | None
+
+
 class QuestionRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -99,6 +107,14 @@ class QuestionRead(BaseModel):
     explanation: str | None
     teacher_notes: str | None
     media_asset_id: UUID | None
+    #: The address the picture is served from, written by the server rather than guessed
+    #: by a client, and `None` when the question has no picture (see
+    #: `constants.media_content_url`).
+    media_url: str | None = None
+    #: Which set of which passage files this question, if any. The bank screen needs it
+    #: because re-binding a filed question is refused until it is unfiled, and a refusal
+    #: that does not say where the question is filed cannot be acted on.
+    filed_in: "QuestionFiling | None" = None
     config: dict
     current_version: int
     topics: list[TaxonomyRef] = Field(default_factory=list)

@@ -58,6 +58,9 @@ export interface Vocabulary {
   antonyms: string[];
   notes: string | null;
   audio_asset_id: string | null;
+  /** The address the pronunciation is served from. The server writes it, so a payload
+   * cannot name its own media path; `mediaUrl` turns it into a request. */
+  audio_url: string | null;
   source_file_id: string | null;
   translations: Translation[];
   examples: Example[];
@@ -81,6 +84,9 @@ export interface StudyCard {
   translations: Translation[];
   examples: Example[];
   has_audio: boolean;
+  /** The learner's own address for the pronunciation - a student session authorises the
+   * bytes it serves, so a study card never carries the library's path. */
+  audio_url: string | null;
   tags: TaxonomyRef[];
 }
 
@@ -125,6 +131,7 @@ export type VocabularyDraft = {
   synonyms: string[];
   antonyms: string[];
   notes: string | null;
+  audio_asset_id: string | null;
   translations: Translation[];
   examples: Example[];
   tag_ids: string[];

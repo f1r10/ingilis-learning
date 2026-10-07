@@ -3,6 +3,7 @@
 // same view the exam runner will use later, so a question that looks wrong here
 // looks wrong to the student too.
 import { useTranslation } from "react-i18next";
+import { mediaUrl } from "../api/client";
 import type { LearnerView } from "../api/questions";
 
 export default function LearnerPreview({ view }: { view: LearnerView }) {
@@ -12,6 +13,8 @@ export default function LearnerPreview({ view }: { view: LearnerView }) {
   const context = view.context || {};
   const reading = context.reading as Record<string, any> | undefined;
   const listening = context.listening as Record<string, any> | undefined;
+  const media = view.media;
+  const src = mediaUrl(media?.content_url);
 
   return (
     <div className="card stack">
@@ -37,6 +40,17 @@ export default function LearnerPreview({ view }: { view: LearnerView }) {
       ) : null}
 
       {view.prompt ? <p style={{ margin: 0 }}>{view.prompt}</p> : null}
+
+      {media && src ? (
+        media.kind === "image" ? (
+          <img src={src} alt="" style={{ maxWidth: "100%" }} />
+        ) : media.kind === "video" ? (
+          <video src={src} controls style={{ width: "100%" }} />
+        ) : (
+          <audio src={src} controls style={{ width: "100%" }} />
+        )
+      ) : null}
+      {media && !src ? <p className="small muted">{t("media.not_available")}</p> : null}
 
       {kind === "options" ? (
         <ul className="stack" style={{ listStyle: "none", padding: 0, margin: 0 }}>

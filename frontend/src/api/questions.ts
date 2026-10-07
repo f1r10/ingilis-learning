@@ -3,6 +3,7 @@
 // `/questions/types`, so a new type appears without a frontend change.
 
 import { api } from "./client";
+import type { MediaLearner } from "./media";
 
 export interface TaxonomyRef {
   id: string;
@@ -154,8 +155,11 @@ export interface LearnerView {
   answer_widget: string;
   requires_manual_grading: boolean;
   config: Record<string, unknown>;
-  context: Record<string, unknown>;
-  media_asset_id: string | null;
+  /** Only the single-question route sends it. A reading's own screen already showed the
+   * text above the questions, so each question is served without a copy of it. */
+  context?: Record<string, unknown>;
+  /** Present when the question carries a file of its own; the app serves the bytes. */
+  media?: MediaLearner;
   explanation_available: boolean;
 }
 

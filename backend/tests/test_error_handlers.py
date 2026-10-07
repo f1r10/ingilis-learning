@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, FastAPI
 from fastapi.testclient import TestClient
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from app.core.exceptions import (
     APIError,
@@ -14,11 +14,19 @@ from app.core.exceptions import (
     Unauthorized,
     ValidationFailed,
     register_exception_handlers,
+    validation_message,
 )
 
 
 class _Payload(BaseModel):
     name: str
+
+    @field_validator("name")
+    @classmethod
+    def _needs_text(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("a name needs text")
+        return v
 
 
 def _app() -> FastAPI:
@@ -81,3 +89,27 @@ def test_starlette_http_404_envelope():
     r = c.post("/plain-404")
     assert r.status_code == 405
     assert r.json()["error"]["code"] == "method_not_allowed"
+
+
+def test_a_body_refusal_says_why_in_the_message():
+    """`message` is the part every client reads, so a refusal that only says "failed"
+    tells a caller nothing they can act on - and the caller is not always this
+    project's own browser."""
+    c = TestClient(_app())
+    r = c.post("/needs-body", json={"name": "   "})
+    assert r.status_code == 422, r.text
+    err = r.json()["error"]
+    assert err["code"] == "validation_failed"
+    assert "a name needs text" in err["message"], err["message"]
+    assert "Value error," not in err["message"], "the library's prefix is not a teacher's sentence"
+    assert [field["loc"][-1] for field in err["fields"]] == ["name"]
+    assert err["fields"][0]["msg"] == "Value error, a name needs text", "the raw field stays as sent"
+
+
+def test_the_reason_summary_stays_a_summary():
+    """Nine bad fields is a long body, not nine things to read before fixing one."""
+    message = validation_message([f"reason {i}" for i in range(9)])
+    assert message.startswith("Request validation failed: reason 0; reason 1; reason 2")
+    assert "(+6 more)" in message
+    assert "reason 3" not in message
+    assert validation_message([]) == "Request validation failed"

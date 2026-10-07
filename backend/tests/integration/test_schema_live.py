@@ -97,7 +97,10 @@ async def test_every_table_the_models_define_exists(db_ready, app_metadata):
     assert not (live["tables"] - expected), (
         f"tables in the database that no model defines: {sorted(live['tables'] - expected)}"
     )
-    assert len(app_metadata.tables) == 45
+    assert len(app_metadata.tables) == 47, (
+        "45 from the bootstrap domain plus the two question-set membership tables "
+        "`0003_membership_and_checksum` adds"
+    )
 
 
 async def test_column_types_widths_and_nullability_match_the_models(db_ready, app_metadata):
@@ -196,7 +199,7 @@ async def test_indexes_exist_are_unique_where_declared_and_ordered(db_ready, app
         f"only models={sorted(set(expected) - set(live))} "
         f"differing={sorted(k for k in set(live) & set(expected) if live[k] != expected[k])}"
     )
-    assert len(live) >= 91, f"expected every declared index, found {len(live)}"
+    assert len(live) >= 98, f"expected every declared index, found {len(live)}"
 
     partial = {name for _t, name, _u, is_partial, _c in rows if is_partial}
     expected_partial = {
@@ -207,6 +210,7 @@ async def test_indexes_exist_are_unique_where_declared_and_ordered(db_ready, app
     assert partial == expected_partial == {
         "uq_student_access_key_active",
         "uq_vocabulary_word_language",
+        "uq_media_asset_checksum",
     }
 
 

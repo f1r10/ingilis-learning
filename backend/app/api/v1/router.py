@@ -8,7 +8,10 @@ from app.api.v1.endpoints import (
     auth,
     groups,
     health,
+    listening,
+    media,
     questions,
+    reading,
     settings,
     students,
     tags,
@@ -28,3 +31,9 @@ api_router.include_router(topics.router)
 api_router.include_router(tags.router)
 api_router.include_router(vocabulary.router)
 api_router.include_router(vocabulary.student_router)
+api_router.include_router(media.router)
+api_router.include_router(media.student_router)
+api_router.include_router(reading.router)
+api_router.include_router(reading.student_router)
+api_router.include_router(listening.router)
+api_router.include_router(listening.student_router)

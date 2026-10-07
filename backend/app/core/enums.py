@@ -22,6 +22,21 @@ class ContentStatus(str, enum.Enum):
     TRASH = "trash"
 
 
+class TranscriptSource(str, enum.Enum):
+    """Where a listening's transcript came from.
+
+    This is provenance, not lifecycle, and only the module that produced the text may
+    claim to have produced it: the editor can write `MANUAL` or `ABSENT`, the document
+    importer `IMPORTED`, and the speech adapter `AUTO`. A client allowed to name any of
+    the four would leave a transcript with no honest origin.
+    """
+
+    MANUAL = "manual"
+    IMPORTED = "imported"
+    AUTO = "auto"
+    ABSENT = "absent"
+
+
 class ExamStatus(str, enum.Enum):
     DRAFT = "draft"
     SCHEDULED = "scheduled"

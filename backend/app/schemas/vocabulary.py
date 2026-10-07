@@ -199,6 +199,9 @@ class VocabularyRead(BaseModel):
     antonyms: list[str]
     notes: str | None
     audio_asset_id: UUID | None
+    #: The address the pronunciation is served from, written by the server so a payload
+    #: cannot invent its own media path (see `constants.media_content_url`).
+    audio_url: str | None = None
     source_file_id: UUID | None
     translations: list[TranslationRead] = Field(default_factory=list)
     examples: list[ExampleRead] = Field(default_factory=list)
@@ -243,4 +246,7 @@ class VocabularyLearnerRead(BaseModel):
     translations: list[TranslationRead] = Field(default_factory=list)
     examples: list[ExampleRead] = Field(default_factory=list)
     has_audio: bool = False
+    #: The learner's own address for the pronunciation: their session authorises every
+    #: byte request to it, so a study card never carries the library's path.
+    audio_url: str | None = None
     tags: list[TaxonomyRef] = Field(default_factory=list)

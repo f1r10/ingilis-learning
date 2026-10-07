@@ -307,17 +307,19 @@ async def test_synonym_lists_are_cleaned_on_the_way_in(client):
 
 
 async def test_an_unknown_audio_asset_or_tag_is_named_not_a_server_error(client):
-    resp = await client.post("/api/v1/vocabulary", json=word_body(audio_asset_id=str(uuid.uuid4())))
+    missing = str(uuid.uuid4())
+    resp = await client.post("/api/v1/vocabulary", json=word_body(audio_asset_id=missing))
     assert resp.status_code == 422
-    assert "does not exist" in error_of(resp)["message"]
+    # The file refusal says where to get one, because that is the step the teacher can take.
+    assert "no file with that id is in the library" in error_of(resp)["message"]
 
-    tagged = await client.post("/api/v1/vocabulary", json=word_body(tag_ids=[str(uuid.uuid4())]))
+    tagged = await client.post("/api/v1/vocabulary", json=word_body(tag_ids=[missing]))
     assert tagged.status_code == 422
-    assert "tag" in error_of(tagged)["message"]
+    assert f"tag '{missing}' does not exist" in error_of(tagged)["message"]
     assert await _count_live() == 0
 
 
-async def test_a_word_can_carry_a_pronunciation_recording(client):
+async def test_a_word_can_carry_a_pronunciation_recording(client, session_factory):
     asset_id = await _new_media_asset()
     created = await _create(client, audio_asset_id=asset_id)
     assert created["audio_asset_id"] == asset_id
@@ -325,6 +327,13 @@ async def test_a_word_can_carry_a_pronunciation_recording(client):
     only_audio = await client.get("/api/v1/vocabulary", params={"has_audio": "true"})
     assert [row["id"] for row in only_audio.json()["items"]] == [created["id"]]
     assert (await client.get("/api/v1/vocabulary", params={"has_audio": "false"})).json()["items"] == []
+
+    # The learner's copy of the card plays that same file, through the student route.
+    _profile, learner = await _learner(client, session_factory, "pronunciation")
+    card = (await learner.get(f"/api/v1/student/vocabulary/{created['id']}")).json()
+    assert card["has_audio"] is True
+    assert card["audio_url"] == f"/student/media/{asset_id}/content"
+    assert "audio_asset_id" not in card
 
 
 # --------------------------------------------------------------------------- #
@@ -814,12 +823,14 @@ async def test_a_study_card_hands_over_exactly_what_a_learner_needs(client, sess
         "translations",
         "examples",
         "has_audio",
+        "audio_url",
         "tags",
     }
     assert body["word"] == "improve"
     assert body["definition"] == "to make something better"
     assert body["tags"] == [{"id": created["tags"][0]["id"], "name": "week one"}]
     assert body["has_audio"] is False
+    assert body["audio_url"] is None, "a word with no recording has nothing to play"
     for hidden in ("notes", "source_file_id", "audio_asset_id", "deleted_at", "status", "created_at"):
         assert hidden not in body, f"the study card leaked the teacher field '{hidden}'"
     assert not any(TEACHER_ONLY in str(value) for value in body.values()), "the note leaked inside a child row"

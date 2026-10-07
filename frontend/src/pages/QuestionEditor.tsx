@@ -17,6 +17,9 @@ import {
 } from "../api/questions";
 import QuestionConfigForm, { emptyConfig, type Config } from "../components/QuestionConfigForm";
 import LearnerPreview from "../components/LearnerPreview";
+import MediaPicker from "../components/MediaPicker";
+import { listeningApi } from "../api/listening";
+import { readingApi } from "../api/reading";
 
 interface Draft {
   type: string;
@@ -33,6 +36,10 @@ interface Draft {
   penalty: string;
   topic_ids: string[];
   tag_ids: string[];
+  context_kind: string;
+  reading_id: string | null;
+  listening_id: string | null;
+  media_asset_id: string | null;
 }
 
 const BLANK_DRAFT: Draft = {
@@ -50,10 +57,17 @@ const BLANK_DRAFT: Draft = {
   penalty: "",
   topic_ids: [],
   tag_ids: [],
+  context_kind: "independent",
+  reading_id: null,
+  listening_id: null,
+  media_asset_id: null,
 };
 
 // question_engine.validate_scoring only accepts a penalty for these two types.
 const NEGATIVE_TYPES = ["multi_select", "matching"];
+
+// The three words `/questions` accepts for `context_kind`, in the order a teacher reads them.
+const CONTEXT_KINDS = ["independent", "reading_bound", "listening_bound"];
 
 function flatten(nodes: TopicNode[], depth = 0): { node: TopicNode; depth: number }[] {
   return nodes.flatMap((node) => [{ node, depth }, ...flatten(node.children, depth + 1)]);
@@ -91,6 +105,18 @@ export default function QuestionEditor() {
     queryFn: () => questionsApi.preview(savedId as string),
     enabled: !!savedId,
   });
+  // Both libraries are listed only while this question is bound to that kind of context;
+  // a teacher picking a text sees the texts they could pick, not the whole bank.
+  const readings = useQuery({
+    queryKey: ["reading-picker"],
+    queryFn: () => readingApi.list({ view: "bank", page_size: 50, sort: "updated_at", order: "desc" }),
+    enabled: draft.context_kind === "reading_bound",
+  });
+  const listenings = useQuery({
+    queryKey: ["listening-picker"],
+    queryFn: () => listeningApi.list({ view: "bank", page_size: 50, sort: "updated_at", order: "desc" }),
+    enabled: draft.context_kind === "listening_bound",
+  });
 
   const spec = useMemo(
     () => (types.data?.items || []).find((item) => item.type === draft.type),
@@ -115,6 +141,10 @@ export default function QuestionEditor() {
       penalty: String((row.negative_scoring as Record<string, unknown>)?.penalty ?? ""),
       topic_ids: row.topics.map((item) => item.id),
       tag_ids: row.tags.map((item) => item.id),
+      context_kind: row.context_kind,
+      reading_id: row.reading_id,
+      listening_id: row.listening_id,
+      media_asset_id: row.media_asset_id,
     });
     setConfig({ ...(emptyConfig(row.type) as Config), ...(row.config as Config) });
     setSavedId(row.id);
@@ -171,6 +201,12 @@ export default function QuestionEditor() {
     payload.partial_scoring = spec?.supports_partial ? { mode: draft.partial_mode } : {};
     payload.negative_scoring =
       NEGATIVE_TYPES.includes(draft.type) && draft.penalty !== "" ? { penalty: Number(draft.penalty) } : {};
+    // The context is sent as a whole: the kind decides which id may survive, so a
+    // question moved from a text back to independent cannot keep carrying that text.
+    payload.context_kind = draft.context_kind;
+    payload.reading_id = draft.context_kind === "reading_bound" ? draft.reading_id : null;
+    payload.listening_id = draft.context_kind === "listening_bound" ? draft.listening_id : null;
+    payload.media_asset_id = draft.media_asset_id;
     if (!isNew && draft.change_note) payload.change_note = draft.change_note;
     return payload;
   }
@@ -350,6 +386,82 @@ export default function QuestionEditor() {
               <p className="small muted">
                 <Link to="/topics">{t("questions.manage_taxonomy")}</Link>
               </p>
+            </div>
+          </div>
+
+          <div className="card stack">
+            <h2 style={{ margin: 0 }}>{t("questions.context_card")}</h2>
+            <div className="field">
+              <label>{t("questions.context_kind")}</label>
+              <select
+                className="input"
+                value={draft.context_kind}
+                onChange={(e) => setDraft({ ...draft, context_kind: e.target.value })}
+              >
+                {CONTEXT_KINDS.map((kind) => (
+                  <option key={kind} value={kind}>
+                    {t(`questions.context_${kind}`)}
+                  </option>
+                ))}
+              </select>
+              <p className="small muted">{t("questions.context_hint")}</p>
+            </div>
+
+            {draft.context_kind === "reading_bound" ? (
+              <div className="field">
+                <label>{t("questions.choose_reading")}</label>
+                <select
+                  className="input"
+                  value={draft.reading_id || ""}
+                  onChange={(e) => setDraft({ ...draft, reading_id: e.target.value || null })}
+                >
+                  <option value="">{t("questions.choose_reading_empty")}</option>
+                  {(readings.data?.items || []).map((row) => (
+                    <option key={row.id} value={row.id}>
+                      {row.title}
+                    </option>
+                  ))}
+                </select>
+                <p className="small muted">
+                  <Link to="/reading">{t("questions.open_readings")}</Link>
+                </p>
+              </div>
+            ) : null}
+
+            {draft.context_kind === "listening_bound" ? (
+              <div className="field">
+                <label>{t("questions.choose_listening")}</label>
+                <select
+                  className="input"
+                  value={draft.listening_id || ""}
+                  onChange={(e) => setDraft({ ...draft, listening_id: e.target.value || null })}
+                >
+                  <option value="">{t("questions.choose_listening_empty")}</option>
+                  {(listenings.data?.items || []).map((row) => (
+                    <option key={row.id} value={row.id}>
+                      {row.title}
+                    </option>
+                  ))}
+                </select>
+                <p className="small muted">
+                  <Link to="/listening">{t("questions.open_listenings")}</Link>
+                </p>
+              </div>
+            ) : null}
+
+            <div className="field">
+              <label>{t("questions.attached_file")}</label>
+              <MediaPicker
+                value={draft.media_asset_id}
+                onChange={(assetId) => setDraft({ ...draft, media_asset_id: assetId })}
+                copy={{
+                  none: t("questions.no_file_chosen"),
+                  choose: t("questions.choose_file"),
+                  detach: t("questions.detach_file"),
+                  trashed: t("questions.trashed_file_hint"),
+                }}
+              />
+              <p className="small muted">{t("questions.attached_file_hint")}</p>
             </div>
           </div>
 

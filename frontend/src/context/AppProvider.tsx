@@ -43,22 +43,30 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const branding = bootstrap.data?.branding ?? DEFAULT_BRANDING;
   const ui = bootstrap.data?.ui ?? DEFAULT_UI;
 
-  // Restore the session on first load by probing both role endpoints.
+  // Restore the session on first load. A signed-in subject owns exactly one of the two
+  // role endpoints, so probing both in a fixed order would log a guaranteed 401 for every
+  // learner page load. The address bar already says which audience was asked for
+  // (`/student…` is the learner app, everything else is the teacher app), so that picks
+  // which endpoint to try first; the other one is still tried as a fallback, because a
+  // deep link typed by hand is not proof of who is holding the session cookie.
   useEffect(() => {
     let cancelled = false;
+    const learnerUrl = /^\/student(\/|$)/.test(window.location.pathname);
+    const probes = learnerUrl ? ["/auth/me/student", "/auth/me/admin"] : ["/auth/me/admin", "/auth/me/student"];
     (async () => {
-      try {
-        const me = await api.get<any>("/auth/me/admin");
-        if (!cancelled) setSubject({ kind: "admin", id: me.id, username: me.username, display_name: me.display_name });
-      } catch {
+      for (const path of probes) {
         try {
-          const me = await api.get<any>("/auth/me/student");
-          if (!cancelled) {
+          const me = await api.get<any>(path);
+          if (cancelled) return;
+          if (path.endsWith("/admin")) {
+            setSubject({ kind: "admin", id: me.id, username: me.username, display_name: me.display_name });
+          } else {
             setSubject({ kind: "student", id: me.id, name: me.name, surname: me.surname, username: me.username, ui_language: me.ui_language });
             if (me.ui_language) applyLanguage(me.ui_language);
           }
+          break;
         } catch {
-          /* not logged in */
+          /* not this role - try the other endpoint, then stay signed out */
         }
       }
       if (!cancelled) setProbed(true);

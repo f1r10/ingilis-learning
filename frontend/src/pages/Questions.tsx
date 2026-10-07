@@ -15,8 +15,13 @@ import {
   type TopicNode,
 } from "../api/questions";
 import { ApiError } from "../api/client";
+import { listeningApi } from "../api/listening";
+import { readingApi } from "../api/reading";
 
 const SORTS = ["updated_at", "created_at", "type", "level", "difficulty", "prompt", "status"];
+
+// The words `/questions?context_kind=` accepts.
+const CONTEXTS = ["independent", "reading_bound", "listening_bound"];
 
 function flatten(nodes: TopicNode[], depth = 0): { node: TopicNode; depth: number }[] {
   return nodes.flatMap((node) => [{ node, depth }, ...flatten(node.children, depth + 1)]);
@@ -37,8 +42,14 @@ export default function Questions() {
       status: params.get("status") || "",
       level: params.get("level") || "",
       learning_language: params.get("learning_language") || "",
+      context_kind: params.get("context_kind") || "",
+      has_media: params.get("has_media") || "",
       topic_id: params.get("topic_id") || "",
       tag_id: params.get("tag_id") || "",
+      // `reading_id` and `listening_id` arrive from a passage screen's own link, and are
+      // kept here so the teacher sees the list they asked for rather than the whole bank.
+      reading_id: params.get("reading_id") || "",
+      listening_id: params.get("listening_id") || "",
       view: params.get("view") || "bank",
       sort: params.get("sort") || "updated_at",
       order: params.get("order") || "desc",
@@ -61,6 +72,18 @@ export default function Questions() {
   const types = useQuery({ queryKey: ["question-types"], queryFn: questionsApi.types });
   const topics = useQuery({ queryKey: ["topics"], queryFn: topicsApi.list });
   const tags = useQuery({ queryKey: ["tags"], queryFn: tagsApi.list });
+  // A list narrowed by a passage names that passage, so the teacher knows what they are
+  // looking at instead of a filter they cannot read back.
+  const boundReading = useQuery({
+    queryKey: ["reading-one", filters.reading_id],
+    queryFn: () => readingApi.get(filters.reading_id),
+    enabled: Boolean(filters.reading_id),
+  });
+  const boundListening = useQuery({
+    queryKey: ["listening-one", filters.listening_id],
+    queryFn: () => listeningApi.get(filters.listening_id),
+    enabled: Boolean(filters.listening_id),
+  });
   const list = useQuery({
     queryKey: ["questions", filters],
     queryFn: () => questionsApi.list(filters),
@@ -148,6 +171,19 @@ export default function Questions() {
             </option>
           ))}
         </select>
+        <select className="input" style={{ maxWidth: 200 }} value={filters.context_kind} onChange={(e) => setFilter({ context_kind: e.target.value })}>
+          <option value="">{t("questions.all_contexts")}</option>
+          {CONTEXTS.map((kind) => (
+            <option key={kind} value={kind}>
+              {t(`questions.context_${kind}`)}
+            </option>
+          ))}
+        </select>
+        <select className="input" style={{ maxWidth: 170 }} value={filters.has_media} onChange={(e) => setFilter({ has_media: e.target.value })}>
+          <option value="">{t("questions.any_media")}</option>
+          <option value="true">{t("questions.with_media")}</option>
+          <option value="false">{t("questions.without_media")}</option>
+        </select>
         <select className="input" style={{ maxWidth: 200 }} value={filters.topic_id} onChange={(e) => setFilter({ topic_id: e.target.value })}>
           <option value="">{t("questions.all_topics")}</option>
           {tree.map(({ node, depth }) => (
@@ -180,6 +216,26 @@ export default function Questions() {
           {filters.order === "desc" ? "↓" : "↑"}
         </button>
       </div>
+
+      {filters.reading_id || filters.listening_id ? (
+        <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+          <span className="small muted">
+            {t("questions.bound_to", {
+              title:
+                boundReading.data?.title ||
+                boundListening.data?.title ||
+                (filters.reading_id || filters.listening_id).slice(0, 8),
+            })}
+          </span>
+          <button
+            type="button"
+            className="btn ghost"
+            onClick={() => setFilter({ reading_id: "", listening_id: "" })}
+          >
+            {t("questions.show_whole_bank")}
+          </button>
+        </div>
+      ) : null}
 
       {message ? <div className="alert error" style={{ color: "var(--text)" }}>{message}</div> : null}
 

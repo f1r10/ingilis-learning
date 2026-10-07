@@ -51,6 +51,12 @@ class Settings(BaseSettings):
     object_storage_secret_key: str = "minioadmin"
     object_storage_bucket: str = "platform-media"
     object_storage_secure: bool = False
+    #: Per-kind upload ceilings, in megabytes. Three numbers rather than one, because
+    #: the three kinds fail differently: a 40 MB photograph is a mistake, a 300 MB
+    #: classroom recording is Tuesday. `/media/meta` publishes them so the browser can
+    #: say "too large" before sending anything, instead of after.
+    max_image_upload_mb: int = 15
+    max_audio_upload_mb: int = 200
     max_video_upload_mb: int = 700
     max_file_upload_mb: int = 700
 

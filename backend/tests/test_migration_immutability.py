@@ -144,7 +144,8 @@ def test_bootstrap_revision_uses_only_explicit_schema_ops() -> None:
     assert not result.unexpected
 
 
-def test_revision_chain_is_single_and_linked() -> None:
+def _revision_ids() -> dict[str, str | None]:
+    """Every committed revision id and what it revises, read from the files themselves."""
     revisions: dict[str, str | None] = {}
     for path in REVISION_FILES:
         ns: dict[str, object] = {}
@@ -153,12 +154,32 @@ def test_revision_chain_is_single_and_linked() -> None:
         assert isinstance(rev, str), f"{path.name} has no string `revision`"
         assert rev not in revisions, f"duplicate revision id {rev} in {path.name}"
         revisions[rev] = ns.get("down_revision")
+    return revisions
+
+
+def test_revision_chain_is_single_and_linked() -> None:
+    revisions = _revision_ids()
 
     bases = [r for r, down in revisions.items() if down is None]
     assert len(bases) == 1, f"expected exactly one base revision, found {bases}"
     linked = {d for d in revisions.values() if d is not None}
     heads = set(revisions) - linked
     assert len(heads) == 1, f"expected a single migration head, found {sorted(heads)}"
+
+
+#: `alembic_version.version_num` is `VARCHAR(32)`, and Alembic creates that table for
+#: itself on the first upgrade. A longer id is not a style problem: the UPDATE that
+#: records the new version raises `StringDataRightTruncation`, so the migration runs its
+#: DDL and then cannot be stamped - which offline SQL rendering never notices.
+MAX_REVISION_ID_LENGTH = 32
+
+
+def test_every_revision_id_fits_the_version_table() -> None:
+    too_long = {rev: len(rev) for rev in _revision_ids() if len(rev) > MAX_REVISION_ID_LENGTH}
+    assert not too_long, (
+        f"revision ids longer than {MAX_REVISION_ID_LENGTH} characters cannot be written "
+        f"to alembic_version.version_num: {too_long}"
+    )
 
 
 _DYNAMIC_REVISION = '''

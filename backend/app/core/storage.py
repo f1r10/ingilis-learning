@@ -2,17 +2,27 @@
 
 Uses generated storage keys only - never trusts or stores user filenames as the
 object key (see MEDIA AND SOURCE SECURITY in the spec).
+
+Two read paths exist on purpose. `get_bytes` is for small objects the server needs in
+full (a checksum, a crop); `open_range` is for playing media, where an answer has to be
+streamed and a client that asks for bytes 4-7 million must not make the server fetch the
+whole file. The application, not the browser, stays in front of every object: there is
+no public bucket and no shared link anywhere in here, because a URL that carries
+credentials would outlive the lesson it was made for.
 """
 from __future__ import annotations
 
 import io
 import re
 import secrets
+import threading
+from contextlib import contextmanager
 from dataclasses import dataclass
+from typing import BinaryIO, Iterator
 
 import boto3
 from botocore.config import Config as BotoConfig
-from botocore.exceptions import ClientError
+from botocore.exceptions import BotoCoreError, ClientError
 
 from app.core.config import get_settings
 
@@ -21,6 +31,55 @@ _settings = get_settings()
 _SAFE_EXT = re.compile(r"^[A-Za-z0-9]{1,10}$")
 _SAFE_NAMESPACE = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
 
+#: How much of an object a single streamed read asks for. Small enough that a stalled
+#: download never holds a connection on a huge slice, large enough to keep the request
+#: count down for a two-minute recording.
+_CHUNK_BYTES = 1 << 20
+
+
+class ObjectMissing(Exception):
+    """The bucket has no object at this key.
+
+    A typed error instead of botocore's, because the code that answers a media request
+    has to tell "this asset's file is gone" apart from "the store is down" without
+    importing a cloud SDK, and the first one is a 404 for the teacher while the second
+    is a server fault they must not be shown as a missing file.
+    """
+
+    def __init__(self, key: str) -> None:
+        super().__init__(f"no object stored at {key!r}")
+        self.key = key
+
+
+class StorageUnavailable(Exception):
+    """The bucket could not be reached, or refused the call.
+
+    Not the same as `ObjectMissing`: telling a teacher "this file does not exist" when
+    MinIO is down would send them to re-upload a file that is sitting there perfectly.
+    """
+
+
+def _is_missing(exc: ClientError) -> bool:
+    """Whether a botocore error is the store's 404 rather than a real fault."""
+    return str(exc.response.get("Error", {}).get("Code", "")) in {
+        "404",
+        "NoSuchKey",
+        "NotFound",
+    }
+
+
+@contextmanager
+def _translated(key: str) -> Iterator[None]:
+    """Raise this module's two outcomes, never the SDK's exception types."""
+    try:
+        yield
+    except ClientError as exc:
+        if _is_missing(exc):
+            raise ObjectMissing(key) from exc
+        raise StorageUnavailable(f"storage rejected {key!r}: {exc}") from exc
+    except BotoCoreError as exc:
+        raise StorageUnavailable(f"storage unreachable for {key!r}: {exc}") from exc
+
 
 @dataclass(frozen=True)
 class StoredObject:
@@ -28,6 +87,28 @@ class StoredObject:
     key: str
     content_type: str
     size: int
+
+
+@dataclass(frozen=True)
+class ObjectHead:
+    """What the store says about an object without transferring it."""
+
+    size: int
+    content_type: str | None
+
+
+@dataclass(frozen=True)
+class OpenedRange:
+    """One slice of an object, ready to be handed to a response.
+
+    `total_size` is the whole object's length, which is what a `Content-Range` header
+    needs and cannot be derived from the slice itself."""
+
+    stream: BinaryIO
+    start: int
+    length: int
+    total_size: int
+    content_type: str | None
 
 
 class ObjectStorage:
@@ -42,6 +123,22 @@ class ObjectStorage:
             config=BotoConfig(signature_version="s3v4"),
         )
         self._bucket = _settings.object_storage_bucket
+        self._bucket_ready = False
+        self._bucket_lock = threading.Lock()
+
+    def _prepare_write(self) -> None:
+        """Create the bucket on the first write, because a fresh install has none.
+
+        MinIO starts empty and the compose stack deliberately creates no bucket: without
+        this, the first upload on a new installation is answered with a 503 saying the
+        store is unreachable, which is not what happened - the store answered perfectly,
+        there was just nowhere to put the file. One check per object, and a store that
+        refuses the create still raises, so the caller answers for it.
+        """
+        with self._bucket_lock:
+            if not self._bucket_ready:
+                self.ensure_bucket()
+                self._bucket_ready = True
 
     def ensure_bucket(self) -> None:
         try:
@@ -78,30 +175,116 @@ class ObjectStorage:
         self, namespace: str, original_filename: str, data: bytes, content_type: str
     ) -> StoredObject:
         key = self.build_key(namespace, original_filename)
-        self._client.upload_fileobj(
-            io.BytesIO(data),
-            self._bucket,
-            key,
-            ExtraArgs={"ContentType": content_type},
-        )
+        with _translated(key):
+            self._prepare_write()
+            self._client.upload_fileobj(
+                io.BytesIO(data),
+                self._bucket,
+                key,
+                ExtraArgs={"ContentType": content_type},
+            )
         return StoredObject(self._bucket, key, content_type, len(data))
+
+    def put_file(
+        self, key: str, source: BinaryIO, content_type: str, size: int
+    ) -> StoredObject:
+        """Store an already-opened file under a key chosen by the caller.
+
+        The caller resolved the key (and proved the bytes are what it claims) so the
+        upload never has to sit in memory: `upload_fileobj` copies in parts. `size` is
+        passed through for the return value only - the store trusts its own count.
+        """
+        source.seek(0)
+        with _translated(key):
+            self._prepare_write()
+            self._client.upload_fileobj(
+                source,
+                self._bucket,
+                key,
+                ExtraArgs={"ContentType": content_type},
+            )
+        return StoredObject(self._bucket, key, content_type, size)
 
     def get_bytes(self, key: str) -> bytes:
         buf = io.BytesIO()
-        self._client.download_fileobj(self._bucket, key, buf)
+        with _translated(key):
+            self._client.download_fileobj(self._bucket, key, buf)
         return buf.getvalue()
+
+    def head(self, key: str) -> ObjectHead:
+        """What the store says about an object, without transferring it.
+
+        Raises `ObjectMissing` when the key names nothing: a media row whose file has
+        gone is a broken library entry, and the reader has to be able to say that.
+        """
+        with _translated(key):
+            response = self._client.head_object(Bucket=self._bucket, Key=key)
+        return ObjectHead(
+            size=int(response.get("ContentLength") or 0),
+            content_type=response.get("ContentType"),
+        )
+
+    def open_range(self, key: str, start: int, end: int) -> OpenedRange:
+        """Open bytes ``start..end`` inclusive, as a readable stream.
+
+        A missing object raises `ObjectMissing`, which the caller tells apart from "the
+        range runs past the end"; the store clamps nothing and reports no invented
+        length.
+        """
+        with _translated(key):
+            response = self._client.get_object(
+                Bucket=self._bucket, Key=key, Range=f"bytes={start}-{end}"
+            )
+        content_range = str(response.get("ContentRange") or "")
+        total = 0
+        if "/" in content_range:
+            try:
+                total = int(content_range.rsplit("/", 1)[-1])
+            except ValueError:
+                total = 0
+        body = response["Body"]
+        length = int(response.get("ContentLength") or 0)
+        if not total:
+            total = start + length
+        return OpenedRange(
+            stream=body,
+            start=start,
+            length=length,
+            total_size=total,
+            content_type=response.get("ContentType"),
+        )
+
+    def iter_range(self, opened: OpenedRange) -> Iterator[bytes]:
+        """Yield an opened slice in fixed-size chunks and always close its socket.
+
+        Chunking happens here rather than in the endpoint so a caller cannot forget the
+        close and leave a connection from the response generator onto MinIO.
+        """
+        try:
+            while True:
+                chunk = opened.stream.read(_CHUNK_BYTES)
+                if not chunk:
+                    break
+                yield chunk
+        finally:
+            opened.stream.close()
 
     def exists(self, key: str) -> bool:
         try:
             self._client.head_object(Bucket=self._bucket, Key=key)
             return True
         except ClientError as exc:
-            code = str(exc.response.get("Error", {}).get("Code", ""))
-            if code in {"404", "NoSuchKey", "NotFound"}:
+            if _is_missing(exc):
                 return False
             raise
 
     def presigned_get(self, key: str, expires_seconds: int = 900) -> str:
+        """A link that carries its own authorisation for a while.
+
+        Kept for server-side jobs that must hand a file to another service; no
+        browser-facing response ever returns one, because a media URL outlives the tab
+        it was opened in and a link that needs no login is not a lesson's worth of access
+        but a permanent one."""
         return self._client.generate_presigned_url(
             "get_object",
             Params={"Bucket": self._bucket, "Key": key},
@@ -109,7 +292,8 @@ class ObjectStorage:
         )
 
     def delete(self, key: str) -> None:
-        self._client.delete_object(Bucket=self._bucket, Key=key)
+        with _translated(key):
+            self._client.delete_object(Bucket=self._bucket, Key=key)
 
 
 _storage: ObjectStorage | None = None

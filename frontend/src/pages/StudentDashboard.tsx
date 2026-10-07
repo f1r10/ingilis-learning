@@ -15,6 +15,12 @@ export default function StudentDashboard() {
         <Link to="/student/vocabulary" className="card small" style={{ padding: "0.6rem 0.9rem", textDecoration: "none" }}>
           {t("vocabulary.my_words")}
         </Link>
+        <Link to="/student/reading" className="card small" style={{ padding: "0.6rem 0.9rem", textDecoration: "none" }}>
+          {t("reading.my_readings")}
+        </Link>
+        <Link to="/student/listening" className="card small" style={{ padding: "0.6rem 0.9rem", textDecoration: "none" }}>
+          {t("listening.my_listenings")}
+        </Link>
       </div>
       <p className="muted small" style={{ marginTop: 24 }}>{branding.footer}</p>
     </div>

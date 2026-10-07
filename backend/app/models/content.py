@@ -144,7 +144,13 @@ class ImportItem(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 # Media library
 # --------------------------------------------------------------------------- #
 class MediaAsset(UUIDPrimaryKeyMixin, TimestampMixin, SoftDeleteMixin, Base):
-    """Reusable image/audio/video. Physical file stored once; referenced many."""
+    """Reusable image/audio/video. Physical file stored once; referenced many.
+
+    `checksum` is the sha256 of the bytes as they were uploaded. The partial unique
+    index below is what makes "stored once" true even when a teacher uploads the same
+    recording twice in the same second; the service check in front of it is only there
+    to give the second request the existing asset instead of an error.
+    """
 
     __tablename__ = "media_asset"
 
@@ -156,9 +162,20 @@ class MediaAsset(UUIDPrimaryKeyMixin, TimestampMixin, SoftDeleteMixin, Base):
     duration_seconds: Mapped[float | None] = mapped_column(Float)
     width: Mapped[int | None] = mapped_column(Integer)
     height: Mapped[int | None] = mapped_column(Integer)
-    checksum: Mapped[str | None] = mapped_column(String(128), index=True)  # dedupe physical files
+    checksum: Mapped[str | None] = mapped_column(String(128))
     source_origin: Mapped[str | None] = mapped_column(String(32))  # upload|youtube|extracted
     meta: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
+
+    __table_args__ = (
+        # Live rows only: a trashed asset must keep holding its file, and the same
+        # bytes may legitimately be re-added after it was removed from the library.
+        Index(
+            "uq_media_asset_checksum",
+            "checksum",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -232,6 +249,10 @@ class Question(UUIDPrimaryKeyMixin, TimestampMixin, SoftDeleteMixin, Base):
     __table_args__ = (
         Index("ix_question_type_status", "type", "status"),
         Index("ix_question_level_lang", "level", "learning_language"),
+        # A question's picture is looked up from the media side twice per request: once
+        # to decide whether a file may be trashed, once to decide whether a learner may
+        # play it. Neither is a scan of the question bank. (migration 0004)
+        Index("ix_question_media_asset_id", "media_asset_id"),
     )
 
 
@@ -326,6 +347,9 @@ class VocabularyEntry(UUIDPrimaryKeyMixin, TimestampMixin, SoftDeleteMixin, Base
             unique=True,
             postgresql_where=text("deleted_at IS NULL"),
         ),
+        # Migration 0004: a word's pronunciation is looked up from the media library
+        # twice over - the trash refusal and a learner's audio button.
+        Index("ix_vocabulary_entry_audio_asset_id", "audio_asset_id"),
     )
 
 
@@ -395,7 +419,11 @@ class Reading(UUIDPrimaryKeyMixin, TimestampMixin, SoftDeleteMixin, Base):
 
 
 class ReadingQuestionSet(UUIDPrimaryKeyMixin, TimestampMixin, Base):
-    """A grouped, ordered set of reading-dependent questions."""
+    """A grouped, ordered set of reading-dependent questions.
+
+    Which questions belong to the set is recorded in `ReadingSetQuestion`, not on the
+    question itself: filing a question under a heading is not a content edit and must
+    never append a `QuestionVersion`."""
 
     __tablename__ = "reading_question_set"
 
@@ -408,6 +436,34 @@ class ReadingQuestionSet(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     config: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
 
     reading: Mapped[Reading] = relationship(back_populates="question_sets")
+
+
+class ReadingSetQuestion(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    """One question filed in one reading question set, at one position.
+
+    Two rules make the grouping safe without touching `Question`:
+
+    * `question_id` is unique across the table, so a question cannot appear under two
+      headings of the same passage (or in two passages) at once.
+    * Both foreign keys cascade on delete, and deleting a *set* therefore removes the
+      membership rows while leaving the questions bound to the passage - a set is
+      deleted far more often than its questions are.
+    """
+
+    __tablename__ = "reading_set_question"
+
+    set_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("reading_question_set.id", ondelete="CASCADE"), nullable=False
+    )
+    question_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("question.id", ondelete="CASCADE"), nullable=False
+    )
+    position: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+    __table_args__ = (
+        Index("uq_reading_set_question_question", "question_id", unique=True),
+        Index("ix_reading_set_question_set", "set_id"),
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -444,8 +500,21 @@ class Listening(UUIDPrimaryKeyMixin, TimestampMixin, SoftDeleteMixin, Base):
         back_populates="listening", cascade="all, delete-orphan"
     )
 
+    __table_args__ = (
+        # Migration 0004. The recording of a listening item is the file a whole class
+        # plays, so two checks run against this column on ordinary requests: whether a
+        # ready listening lets a learner read the asset, and whether live content still
+        # needs it before the library can trash it.
+        Index("ix_listening_media_asset_id", "media_asset_id"),
+    )
+
 
 class ListeningQuestionSet(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    """One block of questions under a listening item, optionally a slice of the audio.
+
+    Membership is recorded in `ListeningSetQuestion`, for the same reason as reading:
+    grouping is not a content edit."""
+
     __tablename__ = "listening_question_set"
 
     listening_id: Mapped[uuid.UUID] = mapped_column(
@@ -460,3 +529,25 @@ class ListeningQuestionSet(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     config: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
 
     listening: Mapped[Listening] = relationship(back_populates="question_sets")
+
+
+class ListeningSetQuestion(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    """One question filed in one listening question set, at one position.
+
+    Mirrors `ReadingSetQuestion`: unique `question_id` (a question answers one block of
+    one recording), and a deleted set takes the memberships with it, not the questions."""
+
+    __tablename__ = "listening_set_question"
+
+    set_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("listening_question_set.id", ondelete="CASCADE"), nullable=False
+    )
+    question_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("question.id", ondelete="CASCADE"), nullable=False
+    )
+    position: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+    __table_args__ = (
+        Index("uq_listening_set_question_question", "question_id", unique=True),
+        Index("ix_listening_set_question_set", "set_id"),
+    )

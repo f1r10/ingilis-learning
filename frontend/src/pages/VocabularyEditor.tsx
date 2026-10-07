@@ -9,6 +9,7 @@ import { ApiError } from "../api/client";
 import { tagsApi } from "../api/questions";
 import { vocabularyApi, type Example, type Translation } from "../api/vocabulary";
 import StudentCard from "../components/StudentCard";
+import MediaPicker from "../components/MediaPicker";
 
 interface Draft {
   word: string;
@@ -21,6 +22,7 @@ interface Draft {
   synonyms: string[];
   antonyms: string[];
   notes: string;
+  audio_asset_id: string | null;
   translations: Translation[];
   examples: Example[];
   tag_ids: string[];
@@ -37,6 +39,7 @@ const BLANK: Draft = {
   synonyms: [],
   antonyms: [],
   notes: "",
+  audio_asset_id: null,
   translations: [],
   examples: [],
   tag_ids: [],
@@ -73,6 +76,7 @@ export default function VocabularyEditor() {
       synonyms: row.synonyms,
       antonyms: row.antonyms,
       notes: row.notes || "",
+      audio_asset_id: row.audio_asset_id,
       translations: row.translations,
       examples: row.examples,
       tag_ids: row.tags.map((tag) => tag.id),
@@ -93,6 +97,7 @@ export default function VocabularyEditor() {
       synonyms: draft.synonyms,
       antonyms: draft.antonyms,
       notes: draft.notes.trim() || null,
+      audio_asset_id: draft.audio_asset_id,
       // Sent whole, never merged: a set that arrives without one of its meanings means
       // the teacher deleted it. The ids the GET handed back are stripped - the endpoint
       // replaces the whole set, so an `id` here would promise a per-row update that does
@@ -246,6 +251,22 @@ export default function VocabularyEditor() {
           <div className="field">
             <label htmlFor="ipa">{t("vocabulary.ipa")}</label>
             <input id="ipa" className="input" value={draft.ipa} onChange={(e) => patch({ ipa: e.target.value })} />
+          </div>
+
+          <div className="field">
+            <label>{t("vocabulary.pronunciation")}</label>
+            <MediaPicker
+              value={draft.audio_asset_id}
+              onChange={(assetId) => patch({ audio_asset_id: assetId })}
+              kind="audio"
+              copy={{
+                none: t("vocabulary.no_audio_chosen"),
+                choose: t("vocabulary.choose_audio"),
+                detach: t("vocabulary.detach_audio"),
+                trashed: t("vocabulary.trashed_audio_hint"),
+              }}
+            />
+            <p className="small muted">{t("vocabulary.pronunciation_hint")}</p>
           </div>
 
           <WordList label={t("vocabulary.synonyms")} value={draft.synonyms} onChange={(synonyms) => patch({ synonyms })} />

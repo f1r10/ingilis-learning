@@ -109,7 +109,11 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
       args:
-        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:8000/api/v1}
+        # Same-origin by default: the shipped nginx proxies /api/ to the backend, so the
+        # browser never needs to know which host port the API happens to be published on.
+        # An absolute value here would have to match FRONTEND_ORIGIN exactly or CORS
+        # refuses every call, which is why it is not the default.
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-/api/v1}
     restart: unless-stopped
     depends_on:
       - backend

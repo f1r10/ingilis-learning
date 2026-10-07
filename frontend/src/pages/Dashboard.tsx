@@ -5,6 +5,9 @@ import { useApp } from "../context/AppProvider";
 const TILES = [
   { to: "/questions", label: "nav.questions" },
   { to: "/vocabulary", label: "nav.vocabulary" },
+  { to: "/reading", label: "nav.reading" },
+  { to: "/listening", label: "nav.listening" },
+  { to: "/media", label: "nav.media" },
   { to: "/topics", label: "nav.topics" },
   { to: "/students", label: "nav.students" },
   { to: "/groups", label: "nav.groups" },

@@ -67,8 +67,8 @@ language, never developer jargon. Heavy operations run in the worker.
 | 1-2 | Foundation: infra, identity, students, groups, settings/branding, security, migrations, tests, acceptance gate | **accepted - `verify_phase12.sh` exit 0, 13/13 steps, 0 mandatory skips** |
 | 3 | Question bank + full question engine (all types, `QuestionVersion` immutability) | **accepted - `verify_phase12.sh` exit 0, 13/13 steps, 0 mandatory skips** |
 | 4 | Vocabulary module | **accepted - `verify_phase12.sh` exit 0, 13/13 steps, 0 mandatory skips, live browser click-through on teacher and learner screens** |
-| 5 | Reading + listening + media libraries (object storage) | not started - **next** |
-| 6 | Catalogs + practice | not started |
+| 5 | Reading + listening + media libraries (object storage) | **accepted - `verify_phase12.sh` exit 0, 13/13 steps, 0 mandatory skips, live browser click-through on teacher and learner screens** |
+| 6 | Catalogs + practice | not started - **next** |
 | 7 | Exams + assignments + attempt engine + grading | not started |
 | 8 | Document import + review pipeline | not started |
 | 9 | Monitoring + activity | not started |
@@ -307,7 +307,124 @@ missing frontend tree is a failure, never a skip.
   Screenshots are not available in this browser surface, so the evidence is structural
   (accessibility snapshots and DOM reads), not pixel-level.
 
-## 6. Working commands
+## 6. Phase 5 - reading, listening and media
+
+Backend, four modules with one shared core:
+
+* `app/core/media_types.py` - byte signature table (17 formats: png/jpeg/gif/bmp/webp/
+  tiff, mp3/wav/aif/flac/ogg/m4a, mp4/mov/webm/mkv/avi), `identify(head)`, `kind_of`,
+  `label_for_mime`, and a `_REFUSED` list for containers that would be a lie to store.
+* `app/services/media_service.py` - upload (spool → sha256 → identify → dedupe against
+  live rows → store), reference counts, the trash veto, `learner_view` (the student-path
+  projection), `update_metadata` (player-reported duration/dimensions), and the
+  range-read path that asks the store for one slice instead of the whole object.
+* `app/services/passage_service.py` - reading and listening as the same shape twice: one
+  `PassageKind` descriptor naming the three tables, the set CRUD, the membership rules,
+  the lifecycle words, the list/learner gates, bulk.
+* `app/services/reading_service.py` / `listening_service.py` - what is not shared:
+  `word_count` counted from the body (never accepted), `layout` stored not inferred, the
+  transcript and its cue lines, `transcript_source` derived, the "nothing to hear cannot
+  be published" veto, the playback rules.
+* Endpoints: `media.py`, `reading.py`, `listening.py` (+ `/student/...` mirrors). 88 API
+  paths in total now.
+
+Migrations: `0003_membership_and_checksum` (`reading_set_question`,
+`listening_set_question` with `uq_*_question` + `ix_*_set`, drops the non-unique
+`ix_media_asset_checksum` for the partial unique `uq_media_asset_checksum`) and
+`0004_media_reference_indexes` (the three FK-side indexes media joins on). `0001_bootstrap`
+untouched; both new revisions downgrade and the gate's step 8 walks
+`0001 -> 0004 -> 0001 -> 0004` for real.
+
+Rules that are now contractual: the object key is generated and a hostile filename cannot
+steer it; identical bytes are one asset and the second upload gets the existing row plus a
+told-so; no presigned URL and no public object ever reaches a browser, and a learner may
+read an asset only while ready, un-trashed content points at it; filing a question under a
+set never writes a `QuestionVersion`; a question answers one block of one passage and
+filing it twice moves it; `filed_under` freezes the binding while filed; a listening with
+no live file and no transcript cannot reach `ready`; trashing a text/recording leaves its
+questions, trashing a file that content needs is refused with counts.
+
+Frontend (no redesign): `api/media.ts`, `api/reading.ts`, `api/listening.ts`;
+`pages/MediaLibrary.tsx` (grid, upload with the server's own ceilings from `/media/meta`,
+kind/origin filters, trash, reference counts, range-played preview), `components/MediaPicker.tsx`
+(one picker used by the listening editor, the question editor and the vocabulary editor),
+`pages/Reading.tsx` + `ReadingEditor.tsx` (body, live server word count, layout, sets and
+filing by drag-free list, status veto shown as the server words it), `pages/Listenings.tsx` +
+`ListeningEditor.tsx` (file, transcript, cue lines, playback rules, sets as slices),
+`pages/StudentReading.tsx` + `StudentListening.tsx` (layout-aware text, range-streamed
+player, replay counting, transcript only when allowed), routes `/reading`,
+`/reading/new`, `/reading/:id`, `/listening`, `/listening/new`, `/listening/:id`,
+`/media`, `/student/reading`, `/student/listening`, nav entries, and az/en/ru/tr copy
+(600 leaves per locale, all four key-identical, verified by the offline locale contract).
+
+### Defects found in this phase and fixed at the root
+
+| Defect | Fix |
+| --- | --- |
+| **A fresh install could not upload anything.** Nothing in the application created its bucket: `ensure_bucket()` was called only by tests (and by the gate's step 12, which runs *after* the integration suite), so the first upload on a new MinIO answered 503 "storage unreachable" - 71 tests failed this way in the gate, and it was a real product failure, not flakiness | `ObjectStorage._prepare_write()`: a lock-guarded, once-per-client `ensure_bucket()` inside the `_translated(key)` block of both write paths (`put_bytes`, `put_file`). A store that refuses the create still raises. Pinned by `test_a_first_write_creates_the_bucket_it_needs`, which points `_settings` at a scratch bucket nothing else uses, asserts it does not exist, uploads, and only then sees it |
+| `StudentReading` displayed a word count the server never sends (`page.word_count`, absent from `ReadingLearnerRead`) - `tsc` flagged it and the honest fix was to stop showing an invented number | the learner line now counts exercises from the payload's own sets (`set.question_count` summed); the teacher editor keeps the server's `word_count` |
+| Six previously-green assertions had been outvoted by Phase 5 (question-bank media payload ×2, vocabulary audio/schema ×2, schema-live counts ×2) | each re-read against the product first, then tightened rather than loosened: the learner media set is now asserted key-by-key (`media_asset_id` must be absent), the exact refusal wordings are pinned, 47 tables / 98 indexes / the third partial unique index are the new floors |
+| 7 TypeScript build errors (`StudentListening` truthy-string `controls`, `MediaLibrary` unused `t`, `ListeningEditor`/`ReadingEditor` draft-state type disagreement, `StudentReading` unknown `word_count`, unused `useMemo`) | fixed at the source: `Boolean(src)`, real module-level `DetailsDraft`/`BodyDraft` types so `setDraft` and the card props agree without casts, dropped dead imports - no `any`, no `@ts-ignore`, no field added to a type to please a component |
+| The shipped `docker-compose.yml` defaulted the frontend's API base to `http://localhost:8000/api/v1` while nginx exists to serve `/api/` same-origin, so any stack that publishes the API on another port (or behind a domain) builds a bundle that cannot reach its own backend, and CORS then refuses it | the compose default is now `/api/v1` (the Dockerfile already had that default); an explicit `VITE_API_BASE_URL` still overrides |
+| **A listening had no way to reach the questions bound to it.** The reading editor links to the question bank filtered by `reading_id`; the listening editor had no such link, so its block pool looked permanently empty and a teacher could not file anything they had just written | the same link added to `BlockList`, with `listening.open_bound_questions` in all four locales. Driven live: a short-answer question created through `/questions?listening_id=…` returns 201, appears in that recording's pool, and files into its block |
+| **The learner's player kept inviting one more listening than the teacher allowed.** `usedUp` compared the number of started listenings with `plays > replay_limit + 1`, but `replay_limit` counts the listens *after* the first, so the budget is `1 + limit` and the comparison stayed false through the extra one | compared with `>=`, and the boundary was then driven in the browser at `replay_limit = 1`: the notice and the disabled play control appear exactly when the second listening has started, never later. A native player whose controls stay live under a "nothing left to hear" notice is a decoration, so the same `usedUp` also removes them |
+| **Every learner page load logged a guaranteed 401.** The session restore probed `/auth/me/admin` first in a fixed order, so a signed-in learner failed one request before succeeding on the next - which reads like a broken session to anyone who opens the network panel, and was the single console error on every student screen | the probe is chosen by the address (`/student…` asks the learner endpoint first, anything else asks the teacher endpoint first) with the other role still tried before a browser is called signed out. Measured after the change: one `/auth/me/student` request and zero `/auth/me/admin` requests on a learner load |
+| A learner's own landing page was labelled "İdarə paneli" (admin panel) in az | new `nav.home` key ("Ana səhifəm" / "Моя главная" / "Ana sayfam" / "Home") used by the student nav entry |
+| The az copy called the pool of unfiled questions "hovuz" - a swimming pool - in six strings, and wore a Turkish suffix ("altındaki") in two more | rewritten as "blokda olmayan suallar" / "altındakı"; the built bundle is grepped for both, and the remaining `altındaki` hits belong to `tr.json`, where that spelling is correct Turkish |
+
+### Evidence
+
+- **`bash scripts/verify_phase12.sh` -> exit 0, `passed steps: 13 / 13`**, run alone on
+  this machine: unit/static **356 passed**, integration (Postgres+Redis+MinIO)
+  **368 passed**, MinIO round trip **11 passed**, each with
+  `0 failed | 0 errors | 0 skipped`. Phase 4 left 201 + 196; Phase 5 added 146 offline
+  rule tests (`test_media_rules` 99, `test_passage_rules` 47) and 169 live integration
+  tests (`test_media_db` 48, `test_reading_db` 57, `test_listening_db` 56,
+  `test_retention_db` 8) plus the new storage test.
+- Step 8 read-back after a fresh `0001 -> 0004` run: 48 tables (47 model + alembic_version),
+  486 columns, 61 foreign keys, 148 indexes; the downgrade to `0001_bootstrap` removed only
+  what each later revision added, and the rebuild refused the duplicate it exists to refuse.
+- Offline half alone on Windows: **356 passed** (5.2s); `ruff check app tests migrations
+  scripts` clean; live per-file runs before the gate: `test_media_db` 48 passed (352s),
+  `test_storage_minio` 11 passed (33s), `test_listening_db` 56 passed (414s), and the
+  6 repaired assertions 14 passed (102s).
+- `docker build frontend` (`tsc -b && vite build` in the shipped `node:20-alpine` stage)
+  green after the 7 type fixes - and the build log is read, not `tail`ed into silence. It
+  was run twice more after the last round of UI fixes (`nav.home`, the replay boundary, the
+  role-aware session probe, the az copy), and the produced bundle is grepped inside the
+  running image: `Ana səhifəm` present, `altındakı` present 3x, `hovuz` absent,
+  `altındaki` present only as the 3 correct Turkish strings.
+- Browser click-through, on the scratch stack (`llp_ui`, its own ports and volumes) as a
+  real teacher session and a real student session:
+  * listening lifecycle: publish refused at 422 with the server's own sentence while the
+    recording has neither audio nor transcript → save → publish 200 → block created → a
+    question created through the bank link scoped to that recording → filed into the block.
+  * audience split, measured from the network log: every teacher surface asks
+    `/api/v1/media/{id}/content` and every learner surface (two recordings, the reading
+    question's image, the vocabulary study card) asks
+    `/api/v1/student/media/{id}/content`; no storage host appears anywhere.
+  * transcript gating: the recording with `show_transcript` on renders the cue lines with
+    their times, the one with it off renders no transcript at all.
+  * media lifecycle: `asset_in_use` refusal in the learner's language, a 93-byte PNG
+    uploaded and read back as 30×26 with `—` references, trashed, restored, and its bytes
+    still served.
+  * replay boundary: with `replay_limit = 1` and both pause and seek refused, two real
+    clicks on the page's own play control produced exactly two listenings, the file's own
+    end did not consume a replay, and at the boundary the alert appears and the control is
+    disabled. A scripted third `play()` still runs - the browser does not enforce this, the
+    page does - which is why the control has to disappear rather than sit there enabled.
+  * teacher app walked through `/dashboard`, `/listening`, `/media`, `/reading`,
+    `/questions`, `/vocabulary`, `/settings` with zero console errors and no untranslated
+    key left on screen; the media table shows its three files with kind, size, measured
+    dimensions or duration and reference counts.
+  * not exercised, and not claimed: the native `<audio>` shadow controls cannot be driven
+    through this browser surface (a click on them lands on the seek bar), so the
+    controls-are-removed assertion for that path rests on the `!usedUp` condition and the
+    built bundle, not on a click. Replay counting is page-local by design today: a reload
+    restarts the count, and the server-authoritative clock arrives with the Phase 7 attempt
+    engine.
+
+## 7. Working commands
 
 ```bash
 # mandatory acceptance (WSL / Linux / macOS / Windows; needs Docker, no make)
@@ -338,7 +455,7 @@ bash state does not persist between commands, so `cd` in every command.
 WSL path for the same repo: `/mnt/c/Users/firon/Documents/Qoder/2026-10-06/1438da7f`
 (run with `wsl -e bash -lc '...'`).
 
-## 7. Environment facts worth not re-discovering
+## 8. Environment facts worth not re-discovering
 
 - WSL Ubuntu: Docker 29.1.3 + Compose 2.40.3 working, internet reachable,
   `python3` = 3.14.4 with **no pip/ensurepip** (venv needs the pip bootstrap), no
@@ -367,11 +484,34 @@ WSL path for the same repo: `/mnt/c/Users/firon/Documents/Qoder/2026-10-06/1438d
 - A throwaway verification stack is cheap and safe: `docker compose -p <name> ... down -v`
   removes only `<name>_*` volumes, and `docker volume ls` proves which names belong to it
   before anything is removed.
+- **The gate must run alone.** `verify_phase12.sh` builds images, starts six containers and
+  hammers them for ~15 minutes on Docker Desktop. Running it at the same time as a dev-stack
+  rebuild or a heavy live pytest run produced 71 upload failures that were *not* the product's
+  fault in the first instance - and discovering that required re-running it clean. Sequential
+  is the only honest schedule here.
+- **The repo-root `.env` is what `docker compose` reads for interpolation, and on this machine
+  it pins non-default host ports** (`BACKEND_PORT=18000 FRONTEND_PORT=15173 POSTGRES_PORT=55432
+  REDIS_PORT=6380 MINIO_API_PORT=19000/19001`) while `backend/.env` (the Windows venv's own
+  file) points at `localhost:5432`. Recreating the dev stack with `docker compose up -d backend
+  frontend` therefore recreates the *whole* project - and because the postgres **volume** keeps
+  the password it was initialised with, the new backend came up with a different
+  `POSTGRES_PASSWORD` and crash-looped on "password authentication failed for user app", while
+  Windows pytest saw `ConnectionRefusedError` on 5432. Recovery without touching any volume:
+  pull the volume's real password out of `backend/.env` without printing it and override the
+  ports back to defaults -
+  `PW=$(grep -m1 "^DATABASE_URL=" backend/.env | sed "s|.*://[^:]*:\([^@]*\)@.*|\1|") &&
+  POSTGRES_PASSWORD="$PW" POSTGRES_PORT=5432 REDIS_PORT=6379 MINIO_API_PORT=9000
+  MINIO_CONSOLE_PORT=9001 BACKEND_PORT=8000 FRONTEND_PORT=5173 docker compose up -d postgres
+  redis minio backend frontend`.
+  Two consequences that are easy to forget: never `up -d` a couple of services on this
+  repository without deciding which ports the stack should end up on, and a verification
+  stack on the `.env` ports needs the frontend's API base to be same-origin (`/api/v1`), not
+  a literal `localhost:8000`.
 
-## 8. Known defects / blockers
+## 9. Known defects / blockers
 
-None open. Phases 1-2, 3 and 4 are accepted; the work now is Phase 5 (reading,
-listening and media).
+None open. Phases 1-2, 3, 4 and 5 are accepted; the work now is Phase 6 (catalogs and
+practice).
 
 Carried forward, each one real and each one owned by a named later phase rather than
 left unmentioned:
@@ -381,7 +521,18 @@ left unmentioned:
 | The login role tabs are clickable `<div>`s, not buttons - no focus ring, no Enter/Space | Phase 13 accessibility pass |
 | `npm install` in the frontend image reports 4 vulnerabilities (3 moderate, 1 high) | Phase 13 dependency update |
 | FastAPI/Starlette deprecation warnings (`ORJSONResponse`, the `HTTP_422_*` constants, per-request `cookies=` in the test client) | Phase 13, with the dependency upgrade |
-| A word's pronunciation cannot be attached from the UI: `audio_asset_id` round-trips through the API and reaches the study card, but there is no upload surface until object storage and media exist. Nothing is faked in its place | Phase 5 |
+| Duration and pixel dimensions are reported by the player through `PATCH /media/{id}`, so a file nobody has opened keeps `null` and the UI says it has not been measured. This image has no codec library, and a number invented by a half-parser would end up on a learner's timer | Phase 12 (a real worker-side probe behind the optional adapter switch) |
+| Trashing a media asset removes it from the library, never from the bucket: no code path deletes an object except the tests' own cleanup. Physical garbage collection has to be a decision made by the phase that can restore a mistake | Phase 11 backups |
+| `transcript_source` can only ever be `manual` or `absent`, and a stored asset's `source_origin` is only `upload`: a client that claims `imported` or `auto` is refused, because provenance asserted by a browser is a claim, not a record | Phase 8 importer, Phase 12 speech adapter |
+| The daily retention job counts trashed rows past `TRASH_RETENTION_DAYS` and **removes nothing** (`removed: 0`, audit row says so) | Phase 11, once a backup makes removal survivable |
+| The learner player's replay counter is counted in the tab (`StudentListening.tsx`), so a refresh starts the count again. The rule itself is the server's and is delivered with the payload; counting it durably needs an attempt, which does not exist yet | Phase 7 attempt engine |
+| Sentences the server refuses with are shown in English inside a Turkish, Russian or Azerbaijani interface. Many distinct refusals share the single `validation_failed` code, so the client cannot look the wording up; the interface copy itself is complete in all four locales and this is only the server's prose | Phase 13, with stable reason keys per refusal |
+| Labels the server supplies - question types from `/questions/types`, vocabulary parts of speech and language names - arrive in English and are printed as they came. They are data, not interface chrome, so they need the same reason-key treatment rather than a client-side guess | Phase 13 |
+| A learner can read a listening, a reading and a word card, but cannot answer: `LearnerPreview` renders questions as a deliberately read-only projection (every control `readOnly`), because an answer needs an attempt to store it | Phase 6 practice, Phase 7 attempts |
+
+Closed by Phase 5: a word's pronunciation can now be recorded once in the media library
+and attached to the word - `audio_asset_id` round-trips, and the study card plays it
+through `/student/media/{id}/content`.
 
 Phase 4 reminder: the integration `conftest.py` no longer hardcodes the head revision -
 it compares `alembic_version` with the head the scripts define and insists the history

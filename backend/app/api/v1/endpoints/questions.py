@@ -207,9 +207,13 @@ async def preview_question(
     _admin: AdminUser = Depends(deps.get_current_admin),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    """The question exactly as a learner would receive it - no answer key."""
+    """The question exactly as a learner would receive it - no answer key.
+
+    The projection is the learner's; only the media path is the admin's own, so the
+    teacher who asked for this preview can actually load the file it shows.
+    """
     question = await _load(db, question_id, allow_trash=False)
-    return await question_service.student_view(db, question)
+    return await question_service.student_view(db, question, served_to_admin=True)
 
 
 @router.get("/{question_id}/versions", response_model=None)
