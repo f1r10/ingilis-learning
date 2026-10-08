@@ -20,6 +20,12 @@ import ListeningEditor from "./pages/ListeningEditor";
 import MediaLibrary from "./pages/MediaLibrary";
 import Catalogs from "./pages/Catalogs";
 import CatalogEditor from "./pages/CatalogEditor";
+import Exams from "./pages/Exams";
+import ExamEditor from "./pages/ExamEditor";
+import ExamGrading from "./pages/ExamGrading";
+import StudentExams from "./pages/StudentExams";
+import StudentExam from "./pages/StudentExam";
+import StudentExamRun from "./pages/StudentExamRun";
 import StudentReading from "./pages/StudentReading";
 import StudentListening from "./pages/StudentListening";
 import StudentPractice from "./pages/StudentPractice";
@@ -66,6 +72,12 @@ export default function App() {
           <Route path="/catalogs" element={<Catalogs />} />
           <Route path="/catalogs/new" element={<CatalogEditor />} />
           <Route path="/catalogs/:id" element={<CatalogEditor />} />
+          {/* `new` and `grading` are listed before `:id`: a path segment matched as an exam id
+              would send the browser looking for a paper called "grading". */}
+          <Route path="/exams" element={<Exams />} />
+          <Route path="/exams/new" element={<ExamEditor />} />
+          <Route path="/exams/grading" element={<ExamGrading />} />
+          <Route path="/exams/:id" element={<ExamEditor />} />
           <Route path="/settings" element={<Settings />} />
         </Route>
         <Route
@@ -81,6 +93,11 @@ export default function App() {
           <Route path="/student/listening" element={<StudentListening />} />
           <Route path="/student/practice" element={<StudentPractice />} />
           <Route path="/student/practice/run" element={<StudentPracticeRun />} />
+          {/* `run` sits before `:id` for the same reason as the teacher's list: the token is not a
+              paper id, and a learner mid-sitting must never be bounced onto the brief page. */}
+          <Route path="/student/exams" element={<StudentExams />} />
+          <Route path="/student/exams/run" element={<StudentExamRun />} />
+          <Route path="/student/exams/:id" element={<StudentExam />} />
         </Route>
         <Route path="*" element={<Navigate to="/login" replace />} />
       </Routes>

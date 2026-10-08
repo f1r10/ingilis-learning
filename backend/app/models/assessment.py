@@ -20,6 +20,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    text,
 )
 from sqlalchemy import (
     Enum as SAEnum,
@@ -221,7 +222,26 @@ class ExamAssignment(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
     exam: Mapped[Exam] = relationship(back_populates="assignments")
 
-    __table_args__ = (Index("ix_assignment_target", "exam_id", "student_id", "group_id"),)
+    __table_args__ = (
+        Index("ix_assignment_target", "exam_id", "student_id", "group_id"),
+        # One student is assigned to an exam once, and one group is assigned once - as two
+        # partial indexes, because a row that holds a NULL in one of the target columns is
+        # never "equal" to anything under a plain unique index. See migration `0006`.
+        Index(
+            "uq_assignment_student",
+            "exam_id",
+            "student_id",
+            unique=True,
+            postgresql_where=text("student_id IS NOT NULL"),
+        ),
+        Index(
+            "uq_assignment_group",
+            "exam_id",
+            "group_id",
+            unique=True,
+            postgresql_where=text("group_id IS NOT NULL"),
+        ),
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -258,6 +278,16 @@ class ExamAttempt(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     exam: Mapped[Exam] = relationship(back_populates="attempts")
     answers: Mapped[list["AttemptAnswer"]] = relationship(
         back_populates="attempt", cascade="all, delete-orphan"
+    )
+
+    __table_args__ = (
+        # "Attempt 2 of 3" is the learner's own sequence, and a second row numbered 1 would
+        # be a run nobody can describe. See migration `0006`.
+        Index("uq_attempt_number", "exam_id", "student_id", "attempt_number", unique=True),
+        # The expiry sweep's read: open attempts that are already past their server-issued
+        # deadline. Every other status is history, and this index is what keeps reading the
+        # history out of it.
+        Index("ix_attempt_open_expiry", "status", "expires_at"),
     )
 
 
@@ -307,6 +337,10 @@ class ManualReview(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     reviewer_note: Mapped[str | None] = mapped_column(Text)
 
     answer: Mapped[AttemptAnswer] = relationship()
+
+    # One queue row per answer: two rows for one essay is the same script marked twice and
+    # a total that moved under the learner. See migration `0006`.
+    __table_args__ = (Index("uq_manual_review_answer", "answer_id", unique=True),)
 
 
 class TeacherFeedback(UUIDPrimaryKeyMixin, TimestampMixin, Base):

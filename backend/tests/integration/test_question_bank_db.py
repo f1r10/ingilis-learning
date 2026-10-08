@@ -220,7 +220,8 @@ async def test_type_registry_describes_every_type_to_the_editor(client):
     by_type = {item["type"]: item for item in body["items"]}
     assert set(by_type) == set(minimal_bodies())
     for key, item in by_type.items():
-        assert item["label"] and item["group"] and item["answer_widget"]
+        assert item["group"] and item["answer_widget"]
+        assert "label" not in item, "the screen puts the code into the learner's language"
         assert item["config_schema"]["type"] == "object"
         assert item["config_schema"]["properties"]
         assert isinstance(item["gradable_automatically"], bool)

@@ -3,11 +3,12 @@
 Continuation state file. Reread this after any context loss and keep going - do not
 re-plan work that is already recorded as done here.
 
-- Current phase: **Phase 7 - exams, assignments and the attempt engine** (Phases 1-6 accepted)
+- Current phase: **Phase 8 - document import and the review pipeline** (Phases 1-7 accepted)
 - Git: branch `main`, remote `https://github.com/f1r10/ingilis-learning.git`
 - Last commits: Phase 1-2 `2ab3294`, Phase 3 `c650bf5`, Phase 4 `20e5006`, Phase 5 `53911f2`,
-  Phase 6 `feat(phase-6): complete catalogs and practice` - all pushed. `git rev-parse HEAD`
-  is the authoritative tip; each phase commit rewrites this line with its own SHA
+  Phase 6 `feat(phase-6): complete catalogs and practice`,
+  Phase 7 `feat(phase-7): complete exams assignments and attempt engine` - all pushed.
+  `git rev-parse HEAD` is the authoritative tip; each phase commit rewrites this line with its own SHA
 
 ---
 
@@ -68,7 +69,7 @@ language, never developer jargon. Heavy operations run in the worker.
 | 4 | Vocabulary module | **accepted - `verify_phase12.sh` exit 0, 13/13 steps, 0 mandatory skips, live browser click-through on teacher and learner screens** |
 | 5 | Reading + listening + media libraries (object storage) | **accepted - `verify_phase12.sh` exit 0, 13/13 steps, 0 mandatory skips, live browser click-through on teacher and learner screens** |
 | 6 | Catalogs + practice | **accepted - `verify_phase12.sh` exit 0, 13/13 steps, 0 mandatory skips, live browser click-through on teacher and learner screens** |
-| 7 | Exams + assignments + attempt engine + grading | not started - **next** |
+| 7 | Exams + assignments + attempt engine + grading | **accepted - `verify_phase12.sh` exit 0, 13/13 steps, 0 mandatory skips, live browser click-through on teacher, grading and learner screens** |
 | 8 | Document import + review pipeline | not started |
 | 9 | Monitoring + activity | not started |
 | 10 | Analytics | not started |
@@ -549,15 +550,150 @@ click-through look better would have silently changed how every existing key is 
     ("Which of these are kinds of weather? / Question / multi_select") and "Take off the
     list" dropped the row and appended `favorite_remove` without touching the add.
 - Carried, each owned by a named phase: the `0 s` duration on a listening picker row (Phase
-  12 probe), physical object GC (Phase 11), server-side replay and exam timers (Phase 7),
-  English server *reason* strings inside a Turkish/Russian/Azerbaijani interface and the
-  `div`-based login tabs (Phase 13).
+  12 probe), physical object GC (Phase 11), server-side replay and exam timers (closed by
+  Phase 7), English server *reason* strings inside a Turkish/Russian/Azerbaijani interface
+  (closed for the exam/attempt surface by Phase 7, Phase 13 for the rest) and the `div`-based
+  login tabs (Phase 13).
 
-## 8. Working commands
+## 8. Phase 7 - exams, assignments, the attempt engine and grading (accepted)
+
+Backend: two new services, two new router files (four routers), two schema modules and one
+migration. The API is now **146 paths / 191 operations**, 32 of them under `/student/`; Phase 7
+adds **37 paths / 44 operations** and removes nothing (the pre-Phase-7 surface is still exactly
+109 / 147).
+
+* `app/services/exam_service.py` (66 functions) - the teacher's side. An exam pins a
+  `QuestionVersion` and a catalog does not, so `resolve_items` reads the *stored* version for
+  every line and reports the item's `state` (`ready` / `draft` / `trashed` / `version_gone`) from
+  the chain above it. Naming a reading or a listening adds **its** questions rather than the
+  text, each bound to that passage so the context travels with the question and no second copy is
+  stored. Composition locks the moment somebody sits (`LockedComposition` -> 409) while timing,
+  shuffling, feedback and visibility stay editable, because those are copied into the attempt's
+  own blueprint at start. `_publish_blockers` answers with the **same codes** the lifecycle check
+  refuses with, so the note above the form and the refusal below it are one sentence;
+  `freeze_composition` + `_deal` produce the sitting's order from its seed, `preview` runs the
+  same code with no write and no token, and `clone` re-points a paper at the versions learners
+  already met instead of at whatever the bank holds now.
+* `app/services/attempt_service.py` (73 functions) - the sitting. **The learner holds a token, the
+  server holds the clock**: a 32-hex token, and `remaining_seconds` recomputed from
+  `expires_at - now()` on every read, so a device switch, a closed tab or a moved local clock
+  changes nothing. `start` tells three cases apart - a second tab on a live sitting resumes it,
+  a deadline that passed while the learner was away closes it and opens a numbered second one,
+  and `resume_after_disconnect=False` closes the abandoned sitting from its autosaved answers.
+  `save_answer` grades with the bank's own engine against the pinned snapshot and returns the
+  verdict only when `feedback_timing` is `instant` (otherwise `withheld`, with the notice carried
+  as a code), counts `changed_count` as a fact about the sitting rather than an accusation, and
+  closes an expired attempt *on the way in* so a late submit is not graded by a different rule
+  than an early one. `finalise` is the one path every closing goes through (submit, expiry sweep,
+  tab limit), `_passed` refuses to guess a verdict while a mark is owed, `_result_state` derives
+  `state`/`visible` from the paper's own `result_visibility` (`awaiting_teacher` and `closed` are
+  different news), and `grade_answer` lets the teacher's `final_score` move the total, with the
+  value it moved from in the audit row because a misread script is corrected, not rewritten.
+* Refusals: every exam, attempt and grading rule now raises a `RuleBroken` carrying `code` and
+  `params`, and `as_invalid` / `as_missing` / `as_conflict` map it to 422 / 404 / 409 with those
+  two fields in the envelope (`backend/app/core/exceptions.py`). `meta()` on both sides serves the
+  word lists (statuses, close reasons, notices, availability reasons) from the code that produces
+  them, so no screen has to guess a literal.
+* `app/services/question_engine.py`: the descriptor's English `label` is **gone** - a question
+  type is data, and the screen now says it through `questions.type_<key>` in all four locales.
+* Endpoints: `exams.py` (`router` + `grading_router`), `student_exams.py` (`router` +
+  `attempts_router`). Schemas `exam.py` / `attempt.py`. Worker: `expire_attempts` now calls
+  `attempt_service.expire_due` and returns what it did, so the cron and the request path close a
+  paper the same way.
+
+Migration: `0006_exam_attempt_integrity` - `uq_assignment_student` and `uq_assignment_group`
+(two **partial** unique indexes, because a nullable column is never equal to anything under a
+plain unique index and a single index over `(exam_id, student_id, group_id)` would let any number
+of half-filled rows through), `uq_attempt_number` (`exam_id, student_id, attempt_number`),
+`uq_manual_review_answer` (`answer_id`) and `ix_attempt_open_expiry` (`status, expires_at`), which
+is what makes a fifteen-second sweep a read of the open papers rather than of the whole attempt
+history. Nothing rewrites a row, so an upgrade over data that already breaks a rule reports the
+violation instead of choosing which duplicate to keep; `downgrade()` drops only these five.
+`0001`-`0005` are untouched; `test_migration_offline_sql` pins each `CREATE UNIQUE INDEX` with its
+`DROP INDEX` reversal and `test_migration_schema_consistency` insists all five are declared by a
+model.
+
+Rules that are now contractual: an exam is not a catalog and holds references, never content;
+every item is exactly one answerable question at a pinned version; composition freezes at the
+first sitting while rules are copied per attempt; a paper is assigned, not opened - an
+unassigned learner never sees it; one assignment per student and per group, one attempt number
+per student, one review row per answer, all enforced in the table and not only in the service;
+the server is the only clock; `no resume after disconnect` costs the sitting rather than leaving
+it open; a hand-out to nobody is a refusal (`exam_no_audience`), not a success that wrote nothing;
+a verdict is withheld when the paper says so, and an answer nobody can auto-mark is reported as
+ungraded, never as zero; a re-mark moves the total; `after_approval` needs no extra flag because
+marking the last answer *is* the approval; a tab switch is stored as the browser's own report and
+the platform never claims it as evidence.
+
+Frontend (no redesign): `api/exams.ts`; `pages/Exams.tsx` (the bank with lifecycle, filters and
+the bulk toolbar), `pages/ExamEditor.tsx` (rules, sections, item picker over all four banks with
+the pinned version and mark on every row, assignments, the sittings table, the preview that runs
+the learner's own deal), `pages/ExamGrading.tsx` (queue, per-answer mark with the note the learner
+will read, `changed_count` and time on the line, teacher feedback, the summary),
+`pages/StudentExams.tsx` (the shelf with each paper's own state), `pages/StudentExam.tsx` (the
+brief: what it is worth, how many sittings, when it closes), `pages/StudentExamRun.tsx` (the
+runner: server countdown, autosave, the rail, the result screen as far as the paper's rules
+reach). `components/AnswerWidget.tsx` now serves both products - `stepKey` (an exam line is keyed
+by `exam_item_id`, because a paper holds a version and may hold two of them), `initial` (a
+resumed sitting shows what was already typed) and `heading`. `i18n/format.ts` is the copy
+formatter: `when()` renders an instant in the interface's locale and `span()` renders a duration
+in it, so a sitting is "2 min 32 s" in English and "2 dəq 32 san" in Azerbaijani rather than
+`152 s` everywhere. Routes `/exams`, `/exams/new`, `/exams/grading`, `/exams/:id`,
+`/student/exams`, `/student/exams/run`, `/student/exams/:id` (`new` and `grading` are matched
+before `:id`, or the browser goes looking for a paper called "grading"); nav entries and dashboard
+tiles in both roles. **1228 keys per locale** (83 sections' worth of them new here), of which 80
+are `errors.*` refusal codes, four key-identical files.
+
+### Defects found in this phase and fixed at the root
+
+| Defect | Fix |
+| --- | --- |
+| **A schema complaint pre-empted the rule it was reporting.** `AssignmentCreate` carried a `model_validator` that raised on an empty audience, so `POST /exams/{id}/assignments` with no names answered `validation_failed` with an English pydantic sentence, and the coded refusal written one layer below it (`exam_no_audience`) never reached anybody | the validator is gone. The payload accepts the shape; `exam_service.assign` refuses it with its own code, and the integration test asserts that code. The rule did not move and was not weakened - only the voice it answers in |
+| **A test that read like a rule was actually reading two.** `test_a_scheduled_paper_needs_an_opening_time_before_it_can_be_issued` insisted the blocker list was exactly `["exam_schedule_needs_opening_time"]` on a paper that also had nobody assigned - so once the audience blocker became truthful, the exact list reported both rules at once | the test now puts a learner on the paper first, so the assertion isolates the schedule rule it is named for, and the audience rule stays owned by `test_an_unassigned_paper_publishes_and_the_editor_says_it_has_nobody`. The assertion was not loosened into a `in`-check |
+| **The paper's answers were kept back and the screen accused the teacher of not marking them.** Under `show_correct_answers=false` every line rendered "Not marked", which is a sentence about a mark that is owed, not about a rule that hides the key | one line above the card says what the paper does (`practice.verdict_withheld`, in all four locales) and the per-line chip is dropped, so a learner reads the rule once instead of five times |
+| **The teacher's sentence about an answer never reached the learner who asked for it.** `manual_review.reviewer_note` was written by the grading screen and read by nobody: `AttemptResultLine` had no such field | `_reviewer_notes` keys the notes by answer and `_result_lines` carries them; the result screen prints "Your teacher wrote: …" under the line. Pinned live and in `test_attempt_db.py`, including that a paper nobody marked by hand carries `None` rather than an invented sentence |
+| **A sitting's length was a counter, not a sentence.** `2 min 32 s used` / `152 s` were assembled in the browser or read raw from the payload, so a Russian interface said it in English word order | `span(seconds)` in `i18n/format.ts` picks the shape (hours / minutes and seconds / seconds) and asks the locale for the words; three new `common.duration_*` keys and four re-pointed sentences (`exams.used_n`, `exams.left_n`, `grading.took`, `student_exams.took`). Verified in the browser in all four languages |
+| **`<html lang>` lied.** It was set only when somebody touched the switcher, so a restored Azerbaijani session announced itself as English to a screen reader and a spell-checker | `i18n/index.ts` sets it after `init` (a restored language arrives with init and fires no change event) and on every `languageChanged` |
+| **The learner's own language choice was undone on every load.** `AppProvider` re-applied `me.ui_language` each session read, so switching to Azerbaijani flipped back to the school's default after any reload | the profile value is applied only when the device holds no choice yet: `if (!localStorage.getItem("ui_lang") && me.ui_language)` |
+| **A partially credited line was called wrong.** `correct` is a two-valued flag, so an answer scored 4 of 5 fell into `incorrect_count` while the same line on screen said "4 of 5" - in both the exam summary and the Phase 6 practice summary | `_totals` counts a line with a mark above zero and no full mark as `partial_count` (a new field on both read schemas), and the chip reads "Not the full mark" beside the numbers |
+| **Every query retried a refusal, and paused when the tab was not focused.** `retry: 1` with react-query's default online check meant a 404 for "no such attempt" sat unanswered until focus returned - a spinner over an answer the server had already given | retry only when nothing answered (`status === 0`, which `ApiError` reserves for the wire refusing rather than the rule), plus `networkMode: "offlineFirst"` on queries and mutations so the first request goes out regardless of what `navigator.onLine` claims |
+| **A lost connection said "Failed to fetch".** `fetch` rejects with the browser's own English sentence when nothing answers, and that prose went straight onto a learner's screen | the client turns it into `ApiError(0, "network_unreachable", …)` and the copy comes from `errors.network_unreachable`, the one refusal the screen makes without a server |
+
+### Evidence
+
+- **Acceptance gate, clean room, 2026-10-08: `bash scripts/verify_phase12.sh` exit 0,
+  `passed steps: 13 / 13`** - unit/static **651 tests | 651 passed**, integration
+  (Postgres+Redis+MinIO) **530 tests | 530 passed**, MinIO storage round-trip
+  **11 tests | 11 passed**, each with `0 failed | 0 errors | 0 skipped`, so no mandatory
+  test skipped and the migration round trip in step 8 carried `0006` up and back down
+  against a live server.
+- **Phase 7's own tests:** `test_exam_rules` **84** and `test_attempt_rules` **105** offline,
+  `test_exam_db` **53** and `test_attempt_db` **43** live. Offline half of the repository:
+  **651 passed**, `ruff check app tests migrations scripts` clean.
+- **The coded-refusal contract**, `tests/test_frontend_i18n_contract.py`: an AST walk over
+  `exam_service.py`, `attempt_service.py` and the two routers collects every code a refusal can
+  answer with - from a `code=` at the raise site, a refusal class's default, or a refusal table -
+  and fails on a raise that names none, on a code missing from any of the four locales, and on a
+  locale key no server code produces any more. It also reads `refusalText("…")` in the client so
+  the one screen-authored refusal is checked like the rest.
+- Frontend compile through the shipped image (`tsc -b && vite build`) green; the served bundle
+  grepped for the new strings inside the running container.
+- Browser click-through on a throwaway `-p llp_ui` stack, every row created through the product's
+  own HTTP API: a paper built from four banks, published, handed to a class, sat by two learners
+  in parallel, resumed after a real reload, an essay marked by hand from the grading screen and
+  the learner's result re-read with the teacher's sentence under it; refused at the door - an
+  empty hand-out, a paper with a trashed question, a second attempt on a one-sitting paper, a
+  learner trying to open a paper nobody assigned them to. Durations and dates read back in az/en/
+  ru/tr on the teacher's sittings table and the learner's result header.
+
+## 9. Working commands
 
 ```bash
 # mandatory acceptance (WSL / Linux / macOS / Windows; needs Docker, no make)
 bash scripts/verify_phase12.sh                 # add --keep to inspect the run afterwards
+# Run it alone. Two concurrent runs share the compose project `llp_phase12_verify`, and the
+# second one removes the first one's database at startup: the first then reports step 11 as
+# hundreds of errored tests and step 12/13 as skips, which is a collision, not a defect.
 
 # offline developer tests (never an acceptance result)
 cd backend && pytest tests --ignore=tests/integration
@@ -567,8 +703,12 @@ cd backend && ruff check app tests migrations scripts
 # The URL is derived, never printed, and --basetemp keeps Windows temp dirs sane:
 cd backend && mkdir -p ../.tmp \
   && DBURL=$(grep -m1 '^DATABASE_URL=' .env | cut -d= -f2- | sed 's|/app$|/app_test|') \
-  && DATABASE_URL="$DBURL" .venv/Scripts/python.exe -m pytest tests -q --basetemp=../.tmp/bt
-# one process at a time: two suites share app_test and truncate each other
+  && MSYS_ENV_CONV_EXCL='*' PYTHONIOENCODING=utf8 DATABASE_URL="$DBURL" \
+     .venv/Scripts/python.exe -m pytest tests/integration -q -p no:cacheprovider --basetemp=../.tmp/bt
+# one process at a time: two suites share app_test and truncate each other.
+# `MSYS_ENV_CONV_EXCL='*'` stops Git Bash rewriting the URL, and the exam/attempt
+# pair is the slow one: `tests/integration/test_exam_db.py
+# tests/integration/test_attempt_db.py` alone is ~14 minutes for 96 tests.
 
 # frontend compile, using the image the product actually ships (no local node here)
 wsl.exe -- bash -lc 'rm -rf ~/fecheck; mkdir -p ~/fecheck; cp -r <repo>/frontend/. ~/fecheck/; cd ~/fecheck; docker build -t llp-fe-check .'
@@ -576,6 +716,12 @@ wsl.exe -- bash -lc 'rm -rf ~/fecheck; mkdir -p ~/fecheck; cp -r <repo>/frontend
 # dev stack
 cp .env.example .env && docker compose up --build
 docker compose up -d postgres redis minio
+
+# every docker command on this machine goes through WSL (no docker on the Windows PATH)
+wsl.exe -e bash -lc 'cd /mnt/c/Users/firon/Documents/Qoder/2026-10-06/1438da7f \
+  && docker compose -p llp_ui -f docker-compose.yml -f .tmp/llp-ui.yml up -d --build frontend'
+# after a rebuild `up -d` may keep the old container: say `--force-recreate frontend`
+# and check the asset hash in the served bundle changed.
 ```
 
 Windows venv (offline work only): `backend/.venv/Scripts/python.exe`.
@@ -584,7 +730,7 @@ bash state does not persist between commands, so `cd` in every command.
 WSL path for the same repo: `/mnt/c/Users/firon/Documents/Qoder/2026-10-06/1438da7f`
 (run with `wsl -e bash -lc '...'`).
 
-## 9. Environment facts worth not re-discovering
+## 10. Environment facts worth not re-discovering
 
 - WSL Ubuntu: Docker 29.1.3 + Compose 2.40.3 working, internet reachable,
   `python3` = 3.14.4 with **no pip/ensurepip** (venv needs the pip bootstrap), no
@@ -663,10 +809,10 @@ WSL path for the same repo: `/mnt/c/Users/firon/Documents/Qoder/2026-10-06/1438d
   stack on the `.env` ports needs the frontend's API base to be same-origin (`/api/v1`), not
   a literal `localhost:8000`.
 
-## 10. Known defects / blockers
+## 11. Known defects / blockers
 
-None open. Phases 1-2 through 6 are accepted; the work now is Phase 7 (exams, assignments
-and the attempt engine).
+None open. Phases 1-2 through 7 are accepted; the work now is Phase 8 (document import and the
+review pipeline).
 
 Carried forward, each one real and each one owned by a named later phase rather than
 left unmentioned:
@@ -680,12 +826,24 @@ left unmentioned:
 | Trashing a media asset removes it from the library, never from the bucket: no code path deletes an object except the tests' own cleanup. Physical garbage collection has to be a decision made by the phase that can restore a mistake | Phase 11 backups |
 | `transcript_source` can only ever be `manual` or `absent`, and a stored asset's `source_origin` is only `upload`: a client that claims `imported` or `auto` is refused, because provenance asserted by a browser is a claim, not a record | Phase 8 importer, Phase 12 speech adapter |
 | The daily retention job counts trashed rows past `TRASH_RETENTION_DAYS` and **removes nothing** (`removed: 0`, audit row says so) | Phase 11, once a backup makes removal survivable |
-| The learner player's replay counter is counted in the tab (`StudentListening.tsx`), so a refresh starts the count again. The rule itself is the server's and is delivered with the payload; counting it durably needs an attempt, which does not exist yet | Phase 7 attempt engine |
-| Sentences the server refuses with are shown in English inside a Turkish, Russian or Azerbaijani interface. Many distinct refusals share the single `validation_failed` code, so the client cannot look the wording up; the interface copy itself is complete in all four locales and this is only the server's prose | Phase 13, with stable reason keys per refusal |
-| Labels the server supplies - question types from `/questions/types`, vocabulary parts of speech and language names - arrive in English and are printed as they came. They are data, not interface chrome, so they need the same reason-key treatment rather than a client-side guess | Phase 13 |
-| A learner can answer a question only inside a practice run: `LearnerPreview` is still the projection the standalone `/student/reading` and `/student/listening` screens use (every control `readOnly`), because a run's log is keyed to a catalog and an ad-hoc answer needs an attempt to belong to | Phase 7 attempt engine |
-| Nothing on the teacher's side reads the practice log yet. `activity_event` already holds every answer, mark and favorite with its `session_id`, and the learner's own summary is rebuilt from it - but a teacher has no timeline surface to open | Phase 9 monitoring/activity |
-| An essay or a written answer in practice is filed and never marked: there is no grading queue behind it, which is why the learner's screen says "Not marked automatically" rather than promising a teacher | Phase 7 (manual grading on attempts) |
+| The learner player's replay counter is counted in the tab (`StudentListening.tsx`), so a refresh starts the count again. The rule itself is the server's and is delivered with the payload; the standalone listening screen has no attempt to belong to, and an attempt is the only thing a durable count could hang from | Phase 9, where a durable activity counter has a home |
+| Sentences the server refuses with are shown in English inside a Turkish, Russian or Azerbaijani interface - **closed for exams, attempts and grading**, which answer with a code and its `params` and are translated by `refusalText()` (`errors.*`, 80 keys per locale, contract-tested). The other modules still share one `validation_failed` code across many distinct refusals, and pydantic's structural messages (`field_required`, `extra inputs not permitted`) arrive as prose | Phase 13, with stable reason keys per refusal |
+| Labels the server supplies - vocabulary parts of speech and language names - arrive in English and are printed as they came. They are data, not interface chrome, so they need the same code-and-locale treatment rather than a client-side guess. Question-type labels are **closed**: the engine's descriptor no longer carries a `label` at all, and the screen says `questions.type_<key>` | Phase 13 |
+| `allow_previous` and `restrict_copy_paste` are enforced by the runner screen (`StudentExamRun.tsx`): the paper does not offer a way back and the copy handlers are suppressed. A browser cannot make that unbreakable - view-source and a second device are outside what any front end can refuse - and pretending otherwise would be a claim the server cannot support | Phase 13 (server-side step gating: only the current line is ever sent) |
+| A listening line on a paper carries its `replay_limit`, `allow_pause`, `allow_seek` and slice in the sitting's own blueprint, and the runner **names** them to the learner, but the plain `<audio controls>` it renders honours none of them: the browser's own seek bar replays as often as the learner likes. The exam's tab-switch counter is a server fact, the replay counter is not | Phase 13, with the runner's other browser-side rules (one counted play per request, or a single-use signed slice) |
+| An answer typed while the learner was offline is buffered in the tab and is lost if the deadline passes before the wire comes back. The server refuses it on arrival (`attempt_time_up`) and closes the sitting, which is the same rule a late submit meets | Phase 13 (a queue that survives a reload, or the notice says so) |
+| `grading_mode=ai_assisted` is served as `{"available": false}` and refused at the door: no local grader exists yet, and a mark invented by a stub would be a grade a learner cannot appeal | Phase 12 (the optional adapter, with a tested disabled path) |
+| A teacher's per-answer mark, the learner's `changed_count` and the tab-switch count are all stored and shown, but nothing on the teacher's side reads the **practice** log yet. `activity_event` already holds every exam answer, mark and feedback row with its `session_id` too - a timeline surface is what is missing | Phase 9 monitoring/activity |
+| An essay in a **practice run** is filed and never marked: the grading queue reads exam answers only (`manual_review.answer_id` points at an `attempt_answer`), which is why the practice screen says "Not marked automatically" rather than promising a teacher | Phase 9 or 10, once a practice answer has a review row to grow |
+| A learner's own language choice is device-local (`localStorage.ui_lang`). The profile's `ui_language` is only a starting point now - a teacher sets it, and there is no endpoint for a learner to write it back for themselves | Phase 13 (self-service profile) |
+| `listening.seconds` on the media column and the duration probe still read as bare numbers in some teacher tables (`A2 · 0 s`), because `span()` is applied where a sitting is described, not everywhere a file is | Phase 12 probe + Phase 13 sweep |
+
+Closed by Phase 7: the exam server is the only clock (`remaining_seconds` recomputed from
+`expires_at`, the worker's sweep for papers nobody came back for, one `finalise` path for every
+closing), and an answer a teacher has not marked yet is counted as ungraded rather than as zero.
+The standalone `/student/reading` and `/student/listening` screens are still read-only
+projections, because an ad-hoc answer needs an attempt to belong to and an attempt belongs to a
+paper.
 
 Closed by Phase 5: a word's pronunciation can now be recorded once in the media library
 and attached to the word - `audio_asset_id` round-trips, and the study card plays it

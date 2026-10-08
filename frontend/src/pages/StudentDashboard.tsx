@@ -12,6 +12,9 @@ export default function StudentDashboard() {
       <h1>{t("dashboard.welcome")}, {name}</h1>
       <p className="muted">{t("dashboard.student_start")}</p>
       <div className="row" style={{ flexWrap: "wrap", gap: 12 }}>
+        <Link to="/student/exams" className="card small" style={{ padding: "0.6rem 0.9rem", textDecoration: "none" }}>
+          {t("student_exams.my_exams")}
+        </Link>
         <Link to="/student/practice" className="card small" style={{ padding: "0.6rem 0.9rem", textDecoration: "none" }}>
           {t("practice.my_practice")}
         </Link>

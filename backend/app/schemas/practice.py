@@ -176,6 +176,8 @@ class RunSummaryRead(BaseModel):
     catalog_name: str
     answered: int = 0
     correct_count: int = 0
+    #: Lines that took part of their mark - not right, and not worth calling wrong either.
+    partial_count: int = 0
     incorrect_count: int = 0
     #: Essays and anything else a teacher marks by hand: counted, never scored as wrong.
     manual_count: int = 0

@@ -140,16 +140,18 @@ def test_a_revealed_run_is_totalled_from_its_own_events() -> None:
     answers = {
         uuid.uuid4(): event(score=1.0, max_score=1.0, correct=True, requires_manual=False),
         uuid.uuid4(): event(score=0.0, max_score=2.0, correct=False, requires_manual=False),
+        uuid.uuid4(): event(score=1.0, max_score=2.0, correct=False, requires_manual=False),
         uuid.uuid4(): event(score=0.0, max_score=3.0, correct=None, requires_manual=True),
     }
     totals = ps._totals(answers, reveal=True)
     assert totals == {
-        "answered": 3,
+        "answered": 4,
         "correct_count": 1,
+        "partial_count": 1,
         "incorrect_count": 1,
         "manual_count": 1,
-        "score": 1.0,
-        "max_score": 6.0,
+        "score": 2.0,
+        "max_score": 8.0,
     }
 
 
@@ -162,6 +164,7 @@ def test_a_held_back_run_counts_the_answers_without_marking_them() -> None:
     totals = ps._totals(answers, reveal=False)
     assert totals["answered"] == 2
     assert totals["correct_count"] == 0
+    assert totals["partial_count"] == 0
     assert totals["incorrect_count"] == 0
     assert totals["score"] == 0.0
     assert totals["max_score"] == 0.0

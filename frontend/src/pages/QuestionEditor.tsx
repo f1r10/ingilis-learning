@@ -20,6 +20,7 @@ import LearnerPreview from "../components/LearnerPreview";
 import MediaPicker from "../components/MediaPicker";
 import { listeningApi } from "../api/listening";
 import { readingApi } from "../api/reading";
+import { when } from "../i18n/format";
 
 interface Draft {
   type: string;
@@ -240,7 +241,7 @@ export default function QuestionEditor() {
             >
               {(types.data?.items || []).map((item) => (
                 <option key={item.type} value={item.type}>
-                  {item.label}
+                  {t(`questions.type_${item.type}`)}
                 </option>
               ))}
             </select>
@@ -541,7 +542,7 @@ export default function QuestionEditor() {
                 <tr key={row.version}>
                   <td>v{row.version}</td>
                   <td>{row.change_note || "—"}</td>
-                  <td className="small muted">{new Date(row.created_at).toLocaleString()}</td>
+                  <td className="small muted">{when(row.created_at)}</td>
                   <td>
                     <button
                       className="btn ghost"

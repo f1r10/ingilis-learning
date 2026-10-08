@@ -2,6 +2,8 @@
 // Cookies carry the session; the CSRF token is read from the readable
 // `llp_csrf` cookie and echoed back on state-changing requests (double-submit).
 
+import i18n from "../i18n";
+
 const API_BASE = (import.meta.env.VITE_API_BASE_URL as string) || "/api/v1";
 
 /** Turn a served `content_url` into something an `<img>` or `<audio>` can request. The
@@ -24,12 +26,33 @@ export class ApiError extends Error {
   status: number;
   /** Field paths the server named in a 422, so the teacher learns which box to fix. */
   fields: string[];
-  constructor(status: number, code: string, message: string, fields: string[] = []) {
+  /** The numbers a refusal's sentence needs, exactly as the server sent them. */
+  params: Record<string, unknown>;
+  constructor(
+    status: number,
+    code: string,
+    message: string,
+    fields: string[] = [],
+    params: Record<string, unknown> = {},
+  ) {
     super(message);
     this.status = status;
     this.code = code;
     this.fields = fields;
+    this.params = params;
   }
+}
+
+/** The server names the rule it refused on; `errors.<code>` is this product's copy of it.
+ *
+ * A code the four locales have not named yet keeps the sentence the server wrote, so an
+ * untranslated refusal reads as a sentence rather than as `errors.exam_rule` in front of a
+ * learner. Every screen shows `e.message`, so this is the one place a refusal is put into words.
+ */
+function refusalText(code: string, served: string, params: Record<string, unknown>): string {
+  const key = `errors.${code}`;
+  if (!i18n.exists(key)) return served;
+  return String(i18n.t(key, { ...params, defaultValue: served }));
 }
 
 async function request<T>(
@@ -46,11 +69,19 @@ async function request<T>(
     if (csrf) headers.set(CSRF_HEADER, csrf);
   }
 
-  const resp = await fetch(`${API_BASE}${path}`, {
-    credentials: "include",
-    ...options,
-    headers,
-  });
+  let resp: Response;
+  try {
+    resp = await fetch(`${API_BASE}${path}`, {
+      credentials: "include",
+      ...options,
+      headers,
+    });
+  } catch {
+    // Nothing answered: the wire, not the rule, refused. This still has to reach the screen as a
+    // coded refusal, because the browser's own sentence ("Failed to fetch") would be English
+    // prose in front of a learner who just lost their connection.
+    throw new ApiError(0, "network_unreachable", refusalText("network_unreachable", "the server could not be reached", {}));
+  }
 
   if (resp.status === 204) return undefined as T;
 
@@ -60,10 +91,14 @@ async function request<T>(
   if (!resp.ok) {
     const err = data?.error || {};
     const fields = fieldNames(err.fields);
+    const params =
+      err.params && typeof err.params === "object" ? (err.params as Record<string, unknown>) : {};
+    const code = typeof err.code === "string" ? err.code : "error";
     // The server already summarises each field's reason in `message`, so the paths are
     // only worth printing when there was no reason to print.
     const suffix = fields.length && !fieldReasons(err.fields).length ? ` (${fields.join(", ")})` : "";
-    throw new ApiError(resp.status, err.code || "error", `${err.message || resp.statusText}${suffix}`, fields);
+    const served = String(err.message || resp.statusText);
+    throw new ApiError(resp.status, code, `${refusalText(code, served, params)}${suffix}`, fields, params);
   }
   return data as T;
 }

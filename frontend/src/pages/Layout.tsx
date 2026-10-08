@@ -35,12 +35,15 @@ export default function Layout() {
                 <NavLink to="/listening" className={({ isActive }) => (isActive ? "active" : "")}>{t("nav.listening")}</NavLink>
                 <NavLink to="/media" className={({ isActive }) => (isActive ? "active" : "")}>{t("nav.media")}</NavLink>
                 <NavLink to="/catalogs" className={({ isActive }) => (isActive ? "active" : "")}>{t("nav.catalogs")}</NavLink>
+                <NavLink to="/exams" className={({ isActive }) => (isActive ? "active" : "")}>{t("nav.exams")}</NavLink>
+                <NavLink to="/exams/grading" className={({ isActive }) => (isActive ? "active" : "")}>{t("nav.grading")}</NavLink>
                 <NavLink to="/topics" className={({ isActive }) => (isActive ? "active" : "")}>{t("nav.topics")}</NavLink>
                 <NavLink to="/settings" className={({ isActive }) => (isActive ? "active" : "")}>{t("nav.settings")}</NavLink>
               </>
             ) : (
               <>
                 <NavLink to="/student" end className={({ isActive }) => (isActive ? "active" : "")}>{t("nav.home")}</NavLink>
+                <NavLink to="/student/exams" className={({ isActive }) => (isActive ? "active" : "")}>{t("nav.exams")}</NavLink>
                 <NavLink to="/student/practice" className={({ isActive }) => (isActive ? "active" : "")}>{t("nav.practice")}</NavLink>
                 <NavLink to="/student/vocabulary" className={({ isActive }) => (isActive ? "active" : "")}>{t("nav.vocabulary")}</NavLink>
                 <NavLink to="/student/reading" className={({ isActive }) => (isActive ? "active" : "")}>{t("nav.reading")}</NavLink>

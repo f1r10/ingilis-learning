@@ -8,11 +8,45 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 
 class APIError(Exception):
-    def __init__(self, code: str, message: str, http_status: int = 400) -> None:
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        http_status: int = 400,
+        params: dict | None = None,
+    ) -> None:
+        """`code` names the rule; `message` spells it out in one language.
+
+        A screen shows the code, so a teacher's or learner's own language comes from their
+        device rather than from this service's English. `params` carries the numbers a
+        translated sentence needs - "that answer is worth {{max}}" - so the screen can put
+        the rule into words without quoting the backend.
+        """
         self.code = code
         self.message = message
         self.http_status = http_status
+        self.params = params or {}
         super().__init__(message)
+
+
+class RuleBroken:
+    """Names the rule a caller broke.
+
+    The sentence is written for whoever reads the API directly, and it stays so that a
+    colleague's script or a log entry still makes sense on its own. The product's own
+    screens never show it: they ask after `code`, translate that into the language the
+    person is reading the interface in, and take the numbers a sentence needs from
+    `params` - so "two of those students" arrives as two, not as English.
+    """
+
+    code: str = "not_allowed"
+    params: dict | None = None
+
+    def __init__(self, message: str, *, code: str | None = None, params: dict | None = None) -> None:
+        super().__init__(message)
+        if code is not None:
+            self.code = code
+        self.params = params
 
 
 class Unauthorized(APIError):
@@ -26,25 +60,46 @@ class Forbidden(APIError):
 
 
 class NotFound(APIError):
-    def __init__(self, message: str = "Not found") -> None:
-        super().__init__("not_found", message, status.HTTP_404_NOT_FOUND)
+    def __init__(self, message: str = "Not found", *, code: str = "not_found") -> None:
+        super().__init__(code, message, status.HTTP_404_NOT_FOUND)
 
 
 class Conflict(APIError):
-    def __init__(self, code: str, message: str) -> None:
-        super().__init__(code, message, status.HTTP_409_CONFLICT)
+    def __init__(self, code: str, message: str, *, params: dict | None = None) -> None:
+        super().__init__(code, message, status.HTTP_409_CONFLICT, params)
 
 
 class ValidationFailed(APIError):
-    def __init__(self, message: str) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str = "validation_failed",
+        params: dict | None = None,
+    ) -> None:
         # The numeric code, because Starlette deprecated `HTTP_422_UNPROCESSABLE_ENTITY`
         # in favour of a renamed alias that older versions do not have.
-        super().__init__("validation_failed", message, 422)
+        super().__init__(code, message, 422, params)
 
 
 #: How many distinct reasons one summary line carries. Forty bad rows in a bulk body is
 #: one mistake repeated, and the first few sentences are what a caller can act on.
 _MAX_SUMMARY_REASONS = 3
+
+
+def as_invalid(exc: RuleBroken) -> ValidationFailed:
+    """A rule the caller broke, answered 422 with the rule's own name."""
+    return ValidationFailed(str(exc), code=exc.code, params=exc.params)
+
+
+def as_missing(exc: RuleBroken) -> NotFound:
+    """404. What the caller named did not resolve, or was never theirs to name."""
+    return NotFound(str(exc), code=exc.code)
+
+
+def as_conflict(exc: RuleBroken) -> Conflict:
+    """409: the request was legal until something else in the bank said no."""
+    return Conflict(exc.code, str(exc), params=exc.params)
 
 
 def _reasons(errors: list[dict]) -> list[str]:
@@ -81,9 +136,12 @@ def validation_message(reasons: list[str]) -> str:
 def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(APIError)
     async def _api_error_handler(_: Request, exc: APIError) -> ORJSONResponse:
+        body = {"code": exc.code, "message": exc.message}
+        if exc.params:
+            body["params"] = exc.params
         return ORJSONResponse(
             status_code=exc.http_status,
-            content={"error": {"code": exc.code, "message": exc.message}},
+            content={"error": body},
         )
 
     @app.exception_handler(RequestValidationError)

@@ -7,6 +7,7 @@ from app.api.v1.endpoints import (
     admin,
     auth,
     catalogs,
+    exams,
     groups,
     health,
     listening,
@@ -15,6 +16,7 @@ from app.api.v1.endpoints import (
     questions,
     reading,
     settings,
+    student_exams,
     students,
     tags,
     topics,
@@ -42,3 +44,7 @@ api_router.include_router(listening.student_router)
 api_router.include_router(catalogs.router)
 api_router.include_router(practice.router)
 api_router.include_router(practice.favorites_router)
+api_router.include_router(exams.router)
+api_router.include_router(exams.grading_router)
+api_router.include_router(student_exams.router)
+api_router.include_router(student_exams.attempts_router)

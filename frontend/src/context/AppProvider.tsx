@@ -62,7 +62,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             setSubject({ kind: "admin", id: me.id, username: me.username, display_name: me.display_name });
           } else {
             setSubject({ kind: "student", id: me.id, name: me.name, surname: me.surname, username: me.username, ui_language: me.ui_language });
-            if (me.ui_language) applyLanguage(me.ui_language);
+            // The language on the profile is where a learner starts, not a rule re-imposed on every
+            // load. Once somebody has used the switcher on this device that choice is the more recent
+            // one, and applying the stored profile value again would undo it without a word - the
+            // learner would see the interface flip back to the school's default after any reload.
+            if (!localStorage.getItem("ui_lang") && me.ui_language) applyLanguage(me.ui_language);
           }
           break;
         } catch {

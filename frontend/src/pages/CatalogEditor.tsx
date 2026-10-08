@@ -588,7 +588,7 @@ function AddPanel({
           mapRows(data, (row) => ({
             id: row.id,
             title: row.prompt || t("catalogs.no_prompt"),
-            detail: `${row.type} · ${row.level || "—"}`,
+            detail: `${t(`questions.type_${row.type}`)} · ${row.level || "—"}`,
           })),
         );
       if (kind === "vocabulary")

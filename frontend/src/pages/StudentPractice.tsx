@@ -11,6 +11,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { ApiError } from "../api/client";
 import { favoritesApi, practiceApi, type KnownStates, type PracticeDetail } from "../api/practice";
+import { when } from "../i18n/format";
 
 const PAGE_SIZE = 20;
 
@@ -317,7 +318,7 @@ function OpenCatalog({
         {page.runs.length === 0 ? <div className="muted small">{t("practice.no_runs_yet")}</div> : null}
         {page.runs.map((run) => (
           <div className="row small" key={run.session_id} style={{ gap: 8, borderBottom: "1px solid var(--border)", paddingBottom: 6 }}>
-            <span>{formatDate(run.started_at)}</span>
+            <span>{when(run.started_at)}</span>
             <span className="spacer" />
             {run.finished ? (
               <span className="muted">{t("practice.result", { got: run.score, total: run.max_score })}</span>
@@ -331,8 +332,3 @@ function OpenCatalog({
   );
 }
 
-function formatDate(value: string | null) {
-  if (!value) return "";
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
-}

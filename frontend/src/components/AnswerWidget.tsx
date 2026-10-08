@@ -7,26 +7,79 @@
 // would grade as an empty answer. And nothing here decides whether the learner was right:
 // `result` comes back from `/student/practice/answer`, and when the catalog withholds
 // feedback the widget says so instead of showing a blank where a mark belongs.
+//
+// It serves exam sittings as well as practice runs, which is what the two extra props are for.
+// An exam line is keyed by `stepKey` (`exam_item_id`) rather than by the question, because the
+// paper asks for the version it pinned and a resumed sitting has to land back on the same line;
+// `initial` is the learner's own last answer coming back from the server, so a reloaded tab shows
+// what was already typed instead of an empty box that invites them to answer twice.
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { mediaUrl } from "../api/client";
 import type { LearnerView } from "../api/questions";
-import type { AnswerPayload, AnswerResult } from "../api/practice";
+import type { AnswerPayload } from "../api/practice";
 
 type Option = { index: number; text: string };
 type Ref = { ref: string; text: string };
 type Blank = { index: number; label: string | null };
+
+/** Whatever the server said about the answer just sent. Practice returns an explanation with it;
+ * an exam line returns nothing extra when the paper withholds the key, and this type is the only
+ * place the two shapes are allowed to meet. */
+export type AnswerVerdict = {
+  withheld: boolean;
+  correct: boolean | null;
+  score: number | null;
+  max_score: number | null;
+  requires_manual: boolean;
+  explanation?: string | null;
+};
+
+/** The learner's own last answer, read defensively. It was written against the version this line
+ * is pinned to, so a shape this widget does not recognise shows an empty box rather than half of
+ * an answer - and never a payload the grader would not have accepted. */
+function seedOf(value: unknown) {
+  const saved = (value ?? {}) as Record<string, any>;
+  const pairs = Array.isArray(saved.pairs)
+    ? saved.pairs
+        .filter((pair: any) => pair && typeof pair.left_ref === "string")
+        .reduce((acc: Record<string, string>, pair: any) => {
+          acc[pair.left_ref] = String(pair.right_ref ?? "");
+          return acc;
+        }, {})
+    : null;
+  return {
+    option: typeof saved.option_index === "number" ? (saved.option_index as number) : null,
+    options: Array.isArray(saved.option_indexes) ? (saved.option_indexes as number[]) : null,
+    value: typeof saved.value === "boolean" ? (saved.value as boolean) : null,
+    text: typeof saved.text === "string" ? (saved.text as string) : null,
+    blanks: Array.isArray(saved.blanks) ? saved.blanks.map((entry: unknown) => String(entry ?? "")) : null,
+    pairs: pairs as Record<string, string> | null,
+    order: Array.isArray(saved.order) ? saved.order.map((entry: unknown) => String(entry ?? "")) : null,
+  };
+}
 
 export default function AnswerWidget({
   view,
   onSubmit,
   result,
   busy,
+  stepKey,
+  initial,
+  heading,
 }: {
   view: LearnerView;
   onSubmit: (payload: AnswerPayload) => void;
-  result: AnswerResult | null;
+  result: AnswerVerdict | null;
   busy: boolean;
+  /** Defaults to the question's own id. An exam passes its line id instead, which is the only key
+   * that stays correct when a paper holds two versions of the same question. */
+  stepKey?: string;
+  /** `step.saved` - the answer already on this line, in the payload shape above. */
+  initial?: unknown;
+  /** The word for this line in the screen's own header. Practice calls it an exercise; a paper
+   * numbers its questions, and the number comes from the runner, which knows the order. */
+  heading?: string;
 }) {
   const { t } = useTranslation();
   const config = (view.config || {}) as Record<string, any>;
@@ -56,26 +109,32 @@ export default function AnswerWidget({
   // depended on it would re-run, re-set state, and render forever.
   const tokenKey = tokens.map((token) => token.ref).join(",");
 
-  // A step that is navigated away from and back to must not keep the previous question's
-  // answers in its inputs, so the local state is reset whenever the question changes.
-  useEffect(() => {
-    setSingle(null);
-    setMulti([]);
-    setBooleanValue(null);
-    setText("");
-    setBlanks([]);
-    setPairs({});
-  }, [view.id]);
+  // The line this widget belongs to. Practice steps name the question; an exam step names its own
+  // row, because a paper holds a version rather than the bank's current one.
+  const lineKey = stepKey || view.id;
+  // A value rather than the object it came from: a refetch hands back the same answer inside a new
+  // wrapper, and re-seeding on object identity would wipe what the learner is typing right now.
+  const seedKey = JSON.stringify(initial ?? null);
 
+  // A step navigated away from and back to must not keep the previous line's answer in its inputs,
+  // and a resumed sitting must not show an empty box where the learner's own words are stored.
   useEffect(() => {
-    if (blankCount) setBlanks((prev) => (prev.length === blankCount ? prev : Array(blankCount).fill("")));
-  }, [view.id, blankCount]);
+    const seed = seedOf(initial);
+    setSingle(seed.option);
+    setMulti(seed.options ?? []);
+    setBooleanValue(seed.value);
+    setText(seed.text ?? "");
+    setPairs(seed.pairs ?? {});
+    setBlanks(seed.blanks && seed.blanks.length === blankCount ? seed.blanks : Array(blankCount).fill(""));
+  }, [lineKey, seedKey, blankCount]);
 
   // The tokens arrive in the order the engine published them, which is deliberately not the
-  // answer; the learner starts from exactly that sequence.
+  // answer; a learner who already started keeps the sequence they made, and anyone else begins
+  // from exactly what the server published.
   useEffect(() => {
-    setOrder(tokens.map((token) => token.ref));
-  }, [view.id, tokenKey]);
+    const seed = seedOf(initial);
+    setOrder(seed.order && seed.order.length === tokens.length ? seed.order : tokens.map((token) => token.ref));
+  }, [lineKey, tokenKey, seedKey]);
 
   const matchingComplete = lefts.length > 0 && lefts.every((item) => pairs[item.ref]);
   const chosen = Object.values(pairs);
@@ -119,7 +178,7 @@ export default function AnswerWidget({
   return (
     <div className="card stack">
       <div className="row small muted">
-        <span>{t("practice.exercise")}</span>
+        <span>{heading || t("practice.exercise")}</span>
         <span className="spacer" />
         <span>{t("practice.points_n", { n: view.score })}</span>
       </div>
@@ -133,6 +192,11 @@ export default function AnswerWidget({
       {listening ? (
         <div className="stack">
           <strong>{listening.title}</strong>
+          {listening.block_instructions ? (
+            <p className="small muted" style={{ margin: 0 }}>
+              {listening.block_instructions}
+            </p>
+          ) : null}
           {/* A question bound to a recording is useless without it, and the address comes
               from the same context the server built for this learner. */}
           {contextAudio ? <audio src={contextAudio} controls style={{ width: "100%" }} /> : null}
@@ -142,6 +206,16 @@ export default function AnswerWidget({
             </div>
           ) : null}
           {!contextAudio ? <span className="small muted">{t("listening.no_audio_for_you")}</span> : null}
+          {/* A paper can ask about one part of a recording. The slice the teacher cut is the one
+              frozen in the sitting, so the learner is told which part they are being asked about. */}
+          {listening.start_seconds !== null && listening.start_seconds !== undefined ? (
+            <span className="small muted">
+              {t("listening.block_slice", {
+                from: listening.start_seconds,
+                to: listening.end_seconds ?? "end",
+              })}
+            </span>
+          ) : null}
           {listening.replay_limit !== null && listening.replay_limit !== undefined ? (
             <span className="small muted">{t("questions.replay_limit", { n: listening.replay_limit })}</span>
           ) : null}

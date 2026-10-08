@@ -661,21 +661,29 @@ def _totals(answers: dict[uuid.UUID, ActivityEvent], *, reveal: bool) -> dict[st
     score = 0.0
     max_score = 0.0
     correct = 0
+    partial = 0
     incorrect = 0
     manual = 0
     for event in answers.values():
         grade = dict((event.payload or {}).get("grade") or {})
-        score += float(grade.get("score") or 0.0)
+        earned = float(grade.get("score") or 0.0)
+        score += earned
         max_score += float(grade.get("max_score") or 0.0)
         if grade.get("requires_manual"):
             manual += 1
         elif grade.get("correct") is True:
             correct += 1
         elif grade.get("correct") is False:
-            incorrect += 1
+            # `correct` says full marks or not, so a line that took part of its mark would
+            # otherwise be tallied as wrong while the same line above shows "1 of 2".
+            if earned > 0:
+                partial += 1
+            else:
+                incorrect += 1
     return {
         "answered": len(answers),
         "correct_count": correct if reveal else 0,
+        "partial_count": partial if reveal else 0,
         "incorrect_count": incorrect if reveal else 0,
         "manual_count": manual,
         "score": round(score, 6) if reveal else 0.0,

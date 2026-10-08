@@ -302,6 +302,11 @@ function ResultScreen({
           <div className="small">
             <div>{t("practice.answered_n", { n: summary.answered })}</div>
             <div>{t("practice.right_n", { n: summary.correct_count })}</div>
+            {/* Said only when there is one, because "Partly right: 0" is noise next to a total
+                that already adds up. */}
+            {summary.partial_count ? (
+              <div>{t("practice.partly_right_n", { n: summary.partial_count })}</div>
+            ) : null}
             <div>{t("practice.wrong_n", { n: summary.incorrect_count })}</div>
             {summary.manual_count ? <div>{t("practice.not_auto_marked_n", { n: summary.manual_count })}</div> : null}
             {skipped ? <div className="muted">{t("practice.skipped_note", { n: skipped })}</div> : null}
@@ -329,7 +334,11 @@ function ResultScreen({
               ) : line.correct === true ? (
                 <span className="chip">{t("practice.right")}</span>
               ) : line.correct === false ? (
-                <span className="chip">{t("practice.wrong")}</span>
+                // Not the full mark is not the same as wrong, and a line that says both beside
+                // "2 of 3" reads like a broken screen.
+                <span className="chip">
+                  {line.score > 0 ? t("practice.not_full") : t("practice.wrong")}
+                </span>
               ) : (
                 <span className="muted">{t("practice.not_marked")}</span>
               )}

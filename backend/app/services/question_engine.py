@@ -671,7 +671,6 @@ def _public_essay(config: dict) -> dict:
 @dataclass(frozen=True)
 class QuestionTypeDescriptor:
     key: str
-    label: str
     group: str
     answer_widget: str
     config_model: type[BaseModel]
@@ -690,7 +689,6 @@ class QuestionTypeDescriptor:
     def as_info(self) -> dict:
         return {
             "type": self.key,
-            "label": self.label,
             "group": self.group,
             "answer_widget": self.answer_widget,
             "gradable_automatically": self.gradable_automatically,
@@ -710,7 +708,6 @@ def _humanize(exc: ValidationError) -> str:
 _REGISTRY: dict[str, QuestionTypeDescriptor] = {
     "multiple_choice": QuestionTypeDescriptor(
         key="multiple_choice",
-        label="Multiple choice (one answer)",
         group="choice",
         answer_widget="single_option",
         config_model=MultipleChoiceConfig,
@@ -721,7 +718,6 @@ _REGISTRY: dict[str, QuestionTypeDescriptor] = {
     ),
     "multi_select": QuestionTypeDescriptor(
         key="multi_select",
-        label="Multiple choice (several answers)",
         group="choice",
         answer_widget="multi_option",
         config_model=MultiSelectConfig,
@@ -732,7 +728,6 @@ _REGISTRY: dict[str, QuestionTypeDescriptor] = {
     ),
     "true_false": QuestionTypeDescriptor(
         key="true_false",
-        label="True / false",
         group="choice",
         answer_widget="boolean",
         config_model=TrueFalseConfig,
@@ -743,7 +738,6 @@ _REGISTRY: dict[str, QuestionTypeDescriptor] = {
     ),
     "short_answer": QuestionTypeDescriptor(
         key="short_answer",
-        label="Short answer",
         group="text",
         answer_widget="text",
         config_model=ShortAnswerConfig,
@@ -754,7 +748,6 @@ _REGISTRY: dict[str, QuestionTypeDescriptor] = {
     ),
     "gap_fill": QuestionTypeDescriptor(
         key="gap_fill",
-        label="Gap fill (cloze)",
         group="text",
         answer_widget="blanks",
         config_model=GapFillConfig,
@@ -765,7 +758,6 @@ _REGISTRY: dict[str, QuestionTypeDescriptor] = {
     ),
     "matching": QuestionTypeDescriptor(
         key="matching",
-        label="Match the pairs",
         group="text",
         answer_widget="pairs",
         config_model=MatchingConfig,
@@ -776,7 +768,6 @@ _REGISTRY: dict[str, QuestionTypeDescriptor] = {
     ),
     "ordering": QuestionTypeDescriptor(
         key="ordering",
-        label="Put in order",
         group="text",
         answer_widget="order",
         config_model=OrderingConfig,
@@ -787,7 +778,6 @@ _REGISTRY: dict[str, QuestionTypeDescriptor] = {
     ),
     "translation": QuestionTypeDescriptor(
         key="translation",
-        label="Translation",
         group="text",
         answer_widget="text",
         config_model=TranslationConfig,
@@ -798,7 +788,6 @@ _REGISTRY: dict[str, QuestionTypeDescriptor] = {
     ),
     "essay": QuestionTypeDescriptor(
         key="essay",
-        label="Written answer (manual grading)",
         group="manual",
         answer_widget="essay",
         config_model=EssayConfig,

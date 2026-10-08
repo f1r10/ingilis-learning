@@ -14,9 +14,8 @@ from app.adapters import get_ai_provider, get_document_parser, get_ocr_provider
 from app.core import enums, security
 from app.core.config import get_settings
 from app.core.database import SessionLocal
-from app.models.assessment import ExamAttempt
 from app.models.content import ImportJob, Listening, MediaAsset, Question, Reading, VocabularyEntry
-from app.services import audit_service
+from app.services import attempt_service, audit_service
 
 
 async def process_import_job(ctx: dict, import_job_id: str) -> str:
@@ -56,25 +55,18 @@ async def process_import_job(ctx: dict, import_job_id: str) -> str:
             return "failed"
 
 
-async def expire_attempts(ctx: dict) -> None:
-    """Server is authoritative: auto-submit attempts whose timer has elapsed.
+async def expire_attempts(ctx: dict) -> dict:
+    """Close every sitting whose server deadline has passed.
 
-    Grading on auto-submit is finalised by the assessment service (not shown in
-    the request path)."""
-    now = security.utcnow()
+    A learner's own requests close their attempt the moment they are read. This sweep is for
+    the papers nobody came back for: a deadline cannot be outlasted simply by never pressing
+    a button. The grading runs through the same closing path a submit uses, so a paper is not
+    marked one way by the browser and another way by the worker.
+    """
     async with SessionLocal() as db:
-        result = await db.execute(
-            select(ExamAttempt).where(
-                ExamAttempt.status == enums.AttemptStatus.IN_PROGRESS,
-                ExamAttempt.expires_at.is_not(None),
-                ExamAttempt.expires_at < now,
-            )
-        )
-        for attempt in result.scalars():
-            attempt.status = enums.AttemptStatus.AUTO_SUBMITTED
-            attempt.submitted_at = now
-            attempt.server_seconds_used = int((now - attempt.started_at).total_seconds())
+        report = await attempt_service.expire_due(db)
         await db.commit()
+    return report
 
 
 #: What a teacher can put in the trash, in the order a removal would have to walk:

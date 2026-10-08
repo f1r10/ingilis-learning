@@ -97,7 +97,8 @@ def test_registry_owns_the_type_vocabulary():
     info = qe.registry_info()
     assert [item["type"] for item in info] == ALL_TYPES
     for item in info:
-        assert item["label"] and item["group"] and item["answer_widget"]
+        assert item["group"] and item["answer_widget"]
+        assert "label" not in item, "the vocabulary is a code; the screen puts it into words"
         assert item["config_schema"]["properties"], item["type"]
         assert item["supports_partial"] == (item["type"] in qe.PARTIAL_TYPES)
         assert item["gradable_automatically"] == (item["type"] not in qe.MANUAL_TYPES)

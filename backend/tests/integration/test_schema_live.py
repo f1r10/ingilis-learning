@@ -207,10 +207,16 @@ async def test_indexes_exist_are_unique_where_declared_and_ordered(db_ready, app
         for name, (_t, _c, _u, predicate) in index_tuples(app_metadata).items()
         if predicate
     }
+    # Named here as well as derived above, so a partial unique index cannot arrive by accident:
+    # each of these is the only thing stopping a duplicate that a plain unique index would miss
+    # because the column it guards is nullable. A new one has to be argued for in this list and
+    # in a migration of its own.
     assert partial == expected_partial == {
         "uq_student_access_key_active",
         "uq_vocabulary_word_language",
         "uq_media_asset_checksum",
+        "uq_assignment_student",
+        "uq_assignment_group",
     }
 
 

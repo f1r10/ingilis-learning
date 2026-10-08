@@ -260,3 +260,39 @@ def test_every_committed_revision_appears_in_the_rendered_chain(
     assert "CREATE UNIQUE INDEX uq_catalog_item_reference ON catalog_item" in upgrade_sql
     assert "(catalog_id, kind, ref_id)" in upgrade_sql
     assert "DROP INDEX uq_catalog_item_reference" in downgrade_sql
+
+    # 0006: assign once, attempt once, review once. The two assignment rules are partial,
+    # and which half of the target each one reads is the whole design - a plain unique
+    # index over a nullable column enforces nothing at all.
+    for index, table, statement in (
+        (
+            "uq_assignment_student",
+            "exam_assignment",
+            "CREATE UNIQUE INDEX uq_assignment_student ON exam_assignment "
+            "(exam_id, student_id) WHERE student_id IS NOT NULL",
+        ),
+        (
+            "uq_assignment_group",
+            "exam_assignment",
+            "CREATE UNIQUE INDEX uq_assignment_group ON exam_assignment "
+            "(exam_id, group_id) WHERE group_id IS NOT NULL",
+        ),
+        (
+            "uq_attempt_number",
+            "exam_attempt",
+            "CREATE UNIQUE INDEX uq_attempt_number ON exam_attempt "
+            "(exam_id, student_id, attempt_number)",
+        ),
+        (
+            "uq_manual_review_answer",
+            "manual_review",
+            "CREATE UNIQUE INDEX uq_manual_review_answer ON manual_review (answer_id)",
+        ),
+        (
+            "ix_attempt_open_expiry",
+            "exam_attempt",
+            "CREATE INDEX ix_attempt_open_expiry ON exam_attempt (status, expires_at)",
+        ),
+    ):
+        assert statement in upgrade_sql, f"{index} never rendered as {statement!r}"
+        assert f"DROP INDEX {index}" in downgrade_sql, f"{index} never reversed"

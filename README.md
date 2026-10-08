@@ -9,17 +9,19 @@ content / examination / analytics platform. It is **not** hard-coded to English 
 its interface ships in **Azerbaijani, English, Russian and Turkish**. All branding is
 editable in Admin Settings — the platform name is never hard-coded.
 
-> **Current status:** delivery phases 1-6 are implemented and accepted — the complete
+> **Current status:** delivery phases 1-7 are implemented and accepted — the complete
 > domain schema, authentication, users and groups, branding + localization (az/en/ru/tr),
 > the question bank with the full question engine, the vocabulary bank with learner study
-> cards, the reading, listening and media modules on S3/MinIO object storage, and the
-> catalog builder with the learner's practice shelf: runs, per-step marks, saved words and
-> questions, and an activity log a run's summary is rebuilt from. Still to
-> come: exams/attempts and grading, document import and review,
-> monitoring, analytics, exports/backups/restore, the local AI/OCR/STT/translation
-> adapters, and the final security and performance pass. The adapter protocols and the
-> worker exist now as disabled-by-default paths on purpose — the product must stay fully
-> usable with every provider set to `none`.
+> cards, the reading, listening and media modules on S3/MinIO object storage, the
+> catalog builder with the learner's practice shelf, and the exam builder with assignments,
+> the server-timed attempt engine and the teacher's grading queue: papers that pin the
+> question version each line was answered at, sittings a learner can lose their tab to and
+> come back to, marks a re-mark can move, and refusals the screen says in the learner's own
+> language. Still to
+> come: document import and review, monitoring, analytics, exports/backups/restore,
+> the local AI/OCR/STT/translation adapters, and the final security and performance pass.
+> The adapter protocols and the worker exist now as disabled-by-default paths on purpose —
+> the product must stay fully usable with every provider set to `none`.
 >
 > Acceptance is one command: **`bash scripts/verify_phase12.sh`** (also
 > `make verify-phase12`; see [Tests](#tests)). It is the only run that may claim the
@@ -60,20 +62,23 @@ persistent data lives in the self-hosted backend.**
 │   │   ├── models/           # full domain schema (identity, system, content, assessment, activity, ops)
 │   │   ├── api/v1/           # routers: auth, admin, students, groups, settings, health,
 │   │   │                     # questions, topics, tags, vocabulary, media, reading,
-│   │   │                     # listening, and the /student mirrors of them
+│   │   │                     # listening, catalogs, exams + grading, and the /student mirrors
+│   │   │                     # of them (practice, exams, attempts)
 │   │   ├── schemas/          # pydantic v2 request/response models
 │   │   ├── services/         # auth, settings/branding, audit, question bank + engine,
-│   │   │                     # taxonomy, vocabulary, media library, passage/reading/listening
+│   │   │                     # taxonomy, vocabulary, media library, passage/reading/listening,
+│   │   │                     # catalog, activity log, practice runs, exams, attempts + grading
 │   │   ├── adapters/         # AI/OCR/STT/translation/dictionary protocols + registry + impls
 │   │   ├── workers/          # arq worker: import pipeline, attempt expiry (authoritative
 │   │   │                     # timer), trash retention (reports what is due; removal waits
 │   │   │                     # for the Phase 11 backup that makes it survivable)
 │   │   └── main.py           # FastAPI app factory
-│   ├── migrations/           # alembic env + frozen bootstrap + 0002..0004
+│   ├── migrations/           # alembic env + frozen bootstrap + 0002..0006
 │   └── scripts/seed.py       # minimal dev seed (bootstrap admin + languages + branding defaults)
 └── frontend/
     └── src/                  # api client, i18n (az/en/ru/tr), branding shell, teacher and
-                              # student pages: banks, editors, media library, reading, listening
+                              # student pages: banks, editors, media library, reading, listening,
+                              # catalogs, exams, the grading queue, the runner and its result
 ```
 
 ### Key domain invariants (already encoded in the model)
@@ -195,12 +200,15 @@ the bootstrap revision once real deployments exist.
 
 The history is linear and short by design: `0001_bootstrap`,
 `0002_vocabulary_word_unique`, `0003_membership_and_checksum` (the two set-membership
-tables plus `uq_media_asset_checksum`) and `0004_media_reference_indexes`. The guard
+tables plus `uq_media_asset_checksum`), `0004_media_reference_indexes`,
+`0005_catalog_item_unique` (one piece of content named once per catalog) and
+`0006_exam_attempt_integrity` (one assignment per student and per group, one attempt number,
+one review row per answer, and the index the expiry sweep reads). The guard
 scripts replay every revision in order without importing the ORM
 (`tests/migration_replay.py`), so the bootstrap counts stay pinned at 45 tables / 90
-indexes while the **live** floors grow with each phase - after Phase 5 a fresh process
+indexes while the **live** floors grow with each phase - after Phase 7 a fresh process
 reading the migrated database sees 47 model tables (48 with `alembic_version`), 486
-columns, 61 foreign keys and 148 indexes. The acceptance gate walks the chain in both
+columns, 61 foreign keys and 154 indexes. The acceptance gate walks the chain in both
 directions for real: `downgrade 0001_bootstrap` proves each later revision removes only
 what it added, then `upgrade head` rebuilds each index over rows staged underneath it and
 refuses the duplicate the index exists to refuse.
@@ -356,6 +364,48 @@ POST /api/v1/student/practice/answer   one answer, graded by the bank's own rule
 POST /api/v1/student/practice/runs/{session}/finish  closes the run and releases the marks
 GET  /api/v1/student/practice/catalogs/{id}/known | POST the same  known / learning marks
 GET  /api/v1/student/favorites | POST "" | POST /remove  what the learner saved to revisit
+
+GET  /api/v1/exams/meta                statuses, kinds, timings, visibility rules, the caps
+GET  /api/v1/exams                     q/status/language/level/view(bank|trash|all)/sort
+                                       /order/page/page_size, each row with its own counts
+POST /api/v1/exams                     201, always a draft, rules set as asked
+GET/PATCH/DELETE /api/v1/exams/{id}    read whole (items pinned to their version, sections,
+                                       assignments, publish blockers) / edit / soft trash,
+                                       which leaves the sittings it already holds alone
+POST /api/v1/exams/{id}/status         the lifecycle table's moves only; publishing checks
+                                       the paper is servable and refuses with the same codes
+                                       its blockers name
+POST /api/v1/exams/{id}/restore | /clone | /preview | /bulk
+GET/POST /api/v1/exams/{id}/items      a question, or every question filed under a text or
+                                       a recording - references, never copies
+POST /api/v1/exams/{id}/items/reorder  the whole paper in the new order
+PATCH/DELETE /api/v1/exams/items/{item_id}  this line's mark or its section / drop the line,
+                                       which never removes the question it named
+GET/POST /api/v1/exams/{id}/sections | /sections/reorder
+PATCH/DELETE /api/v1/exams/sections/{section_id}  removing a part sends its lines back to
+                                       the unsectioned run, it does not delete them
+GET  /api/v1/exams/{id}/assignments | POST the same   hand the paper out to students or
+                                       groups (a group is read live, so a member who joins
+                                       tomorrow is covered); DELETE one row to withdraw it
+GET  /api/v1/exams/{id}/attempts | /attempts/{attempt_id}  the sittings and one sitting as
+                                       the teacher sees it, with the marks still owed
+
+GET  /api/v1/grading/queue             answers waiting for a person, one row per answer
+GET  /api/v1/grading/answers/{review_id} | POST the same /grade   the answer, then the mark
+                                       with the note the learner will read (re-marking is
+                                       allowed and audited with the value it moved from)
+GET  /api/v1/grading/summary           what is waiting, and who is waiting for it
+POST /api/v1/grading/attempts/{attempt_id}/feedback | DELETE /feedback/{id}
+GET  /api/v1/grading/students/{student_id}/feedback | /meta
+
+GET  /api/v1/student/exams | /meta | /{exam_id}   the papers this learner was handed, with
+                                       each one's own state and their own history on it
+POST /api/v1/student/exams/{exam_id}/start  opens the sitting, or hands back the live one
+GET  /api/v1/student/exams/{exam_id}/attempts
+GET  /api/v1/student/attempts/{token} | /steps | /result   the sitting, its order, its result
+POST /api/v1/student/attempts/answer        autosave one line, graded by the bank's rules
+POST /api/v1/student/attempts/submit        close it through the one path every closing uses
+POST /api/v1/student/attempts/tab-switch    the browser's own report, stored as such
 ```
 
 Admin sessions are stateless signed cookies, but each embeds a `session_epoch`;
@@ -444,10 +494,11 @@ student side is tuned for mobile.
 Implemented: **1) shell/branding/localization, 2) auth + users/groups,
 3) Question Bank + full question engine, 4) vocabulary bank and study cards,
 5) reading, listening and the media library on object storage,
-6) catalogs and practice** + the
+6) catalogs and practice, 7) exams: authoring, assignments, the server-timed attempt engine
+and the teacher's grading queue** + the
 complete schema foundation and adapter/worker skeletons.
 
-Next: 7) exams/attempts · 8) document import + review · 9) monitoring/activity
+Next: 8) document import + review · 9) monitoring/activity
 · 10) analytics · 11) exports/backups · 12) local AI/OCR/transcription · 13) security &
 performance hardening.
 
@@ -575,8 +626,11 @@ than the teacher had written. `allow_seek` and `allow_pause` decide whether the 
 own transport controls are drawn at all: a control the learner is not allowed to use is not
 a control worth showing, and a player that still invites a fourth listening under a notice
 that says there is none left is a decoration rather than a rule. The count is kept on the
-page, so reloading restarts it - that is honest for a browse-anytime surface, and it is why
-the replay clock belongs to the attempt engine from Phase 7 on.
+page, so reloading restarts it - that is honest for a browse-anytime surface. On a paper the
+same rules travel with the sitting's own frozen blueprint, and the learner is told which slice
+of which recording they are being asked about; the counter itself is still the tab's, because a
+replay limit the *server* enforced would mean one counted play per request, which is a
+hardening decision rather than an authoring one.
 
 **A learner's address asks for a learner's session.** The app restores whoever is holding
 the cookie by probing the role endpoint that the address implies: a `/student…` URL tries
@@ -643,8 +697,10 @@ rebuilds the score from those rows. A closed tab, a different device or a reload
 from the `shuffle_seed` stored in the start event - the order is re-derived, not
 re-shuffled, and resuming does not write a second start. `time_spent_seconds` is what the
 learner's screen measured and is stored as reported, with no server-side clock implied: an
-authoritative timer is the attempt engine's job (Phase 7), not a practice shelf that a
-learner may leave open.
+authoritative timer is the attempt engine's job, not a practice shelf that a
+learner may leave open. The exam engine has since grown exactly that clock (Phase 7); the
+practice shelf deliberately still does not use it, because leaving a practice window open is
+not a failure there.
 
 **Marks belong to the learner, not to the lesson.** `known` / `learning` are recorded per
 word across the whole product, so a word marked in one catalog reads as marked in the next,
@@ -656,7 +712,8 @@ Feedback timing is the teacher's decision and is honoured by the server: under
 An essay is never called wrong for being unwritten - it comes back
 `requires_manual` and is counted as an answer the server did not mark, never as a zero and
 never as a mark somebody promised to give: nothing in practice feeds a teacher's grading
-queue, so the learner's own screen says "Not marked automatically".
+queue - the queue Phase 7 built reads exam answers, and a practice essay has no review row to
+grow - so the learner's own screen says "Not marked automatically".
 
 **Learners see only what is actually openable.** A catalog appears when it is `ready` and
 every folder above it is, and each reference has to be `ready` and alive at the moment the
@@ -687,6 +744,78 @@ locale, all four key-identical, verified by the offline locale contract).
 Migrations: `0005_catalog_item_unique` (the unique live-row index above - added, not
 swapped, since `catalog_item` has no soft delete and so no trashed twin to forgive; it
 downgrades by dropping only itself). `0001_bootstrap` through `0004` are untouched.
+
+## Exams, attempts and grading (Phase 7)
+
+An exam is not a catalog with a timer on it. The two share the shape of their content -
+references into the central banks, never copies - and differ in everything a teacher is asked
+to do with them.
+
+**A paper pins a version.** Every `ExamItem` names one answerable question at one
+`QuestionVersion`, and the mark it carries is the mark that version had. Naming a reading or a
+recording adds *its* questions, each bound to that text, so the passage travels with the
+question it belongs to instead of being stored twice. A learner graded last term is still
+gradable after the question has been rewritten twice, and `clone` re-points a reused paper at
+the versions learners already met rather than at whatever the bank holds today.
+
+**Composition freezes at the first sitting;** rules are copied per attempt. Adding, removing,
+reordering or re-marking a line would rewrite what a finished attempt was made of, so it is
+refused with 409 once somebody has sat. Timing, shuffling, feedback and visibility stay
+editable, because they are copied into the attempt's own blueprint when it opens: editing them
+reaches the learners who start afterwards and leaves the one mid-paper on the paper they were
+given. A listening line keeps the slice the teacher cut, the body of a reading keeps its words,
+and the audio is the exception on purpose - the asset id is frozen, the file is signed per
+request, because a stored link would outlive its signature.
+
+**The learner holds a token; the server holds the clock.** A sitting is opened with a 32-hex
+token and `remaining_seconds` is recomputed from `expires_at - now()` on every read, so
+switching device, closing a tab or moving the local clock changes nothing about the deadline.
+The worker's fifteen-second sweep exists for papers nobody came back for, and a request that
+arrives late closes the attempt on the way in, so a submit one second after the bell is graded
+by the same rule as one second before it. Three cases are kept apart: a second tab on a live
+sitting resumes it, a deadline that passed while the learner was away closes it and opens a
+numbered second attempt, and `resume_after_disconnect=false` costs the sitting - which is
+graded from the answers its autosave already stored rather than left open.
+
+**A verdict is a policy, not a fact.** `feedback_timing` decides what one answer returns
+(otherwise the reply says `withheld`), `result_visibility` decides what the result screen shows
+and when, `show_correct_answers` and `show_explanations` decide what the marks are made of, and
+`awaiting_teacher` is different news from `closed`: one means the marks exist and are being
+checked, the other means the paper is still open. An answer no engine can grade is counted as
+ungraded, never as zero; a line that took part of its mark is counted `partial`, because calling
+it wrong would contradict the same line showing "4 of 5". `after_approval` needs no extra flag:
+marking the last answer *is* the approval.
+
+**The teacher's mark is the record.** `POST /grading/answers/{review}/grade` writes
+`final_score`, moves the answer to match so the two screens cannot disagree, and lets the
+paper's total follow it. Re-marking is allowed and audited with the value it moved from,
+because a misread script is corrected rather than rewritten, and the sentence written with the
+mark reaches the learner's result screen under that line.
+
+Migration `0006_exam_attempt_integrity` is where three of those promises stop being habits:
+`uq_assignment_student` and `uq_assignment_group` (partial, because a nullable half of a plain
+unique index never equals anything and would let any number through), `uq_attempt_number`
+("attempt 2 of 3" cannot have two rows numbered 1) and `uq_manual_review_answer` (one queue row
+per answer: two is the same essay marked twice), plus `ix_attempt_open_expiry`, which keeps a
+fifteen-second sweep a read of the open papers rather than of the whole attempt history. It
+rewrites no row, so data that already breaks a rule reports the violation instead of choosing
+which duplicate to keep.
+
+Every rule on this surface refuses with a **code** and the numbers its sentence needs, and the
+screen puts it into words: `errors.<code>` across az/en/ru/tr (80 refusal keys per locale), one
+translation point in `api/client.ts`, dates and durations formatted by `i18n/format.ts` in the
+interface's locale, and question type names no longer sent by the engine at all.
+`tests/test_frontend_i18n_contract.py` reads the services' AST and fails on a refusal that names
+no code, on a code missing from any locale, and on a locale key no server code produces - so the
+vocabulary cannot drift from the rules again.
+
+The two screens a paper's rules actually change: `pages/ExamEditor.tsx` lists each line with the
+version it is pinned to, the mark it carries, whether it can be auto-marked, and the blockers
+that will refuse Publish before the teacher presses it; `pages/StudentExamRun.tsx` shows the
+server's countdown, autosaves every line, keeps a resumed sitting on the same line it left, and
+shows the result exactly as far as the paper allows.
+
+---
 
 ## Tests
 

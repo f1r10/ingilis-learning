@@ -56,7 +56,6 @@ export interface QuestionVersion {
 
 export interface TypeSpec {
   type: string;
-  label: string;
   group: string;
   answer_widget: string;
   gradable_automatically: boolean;

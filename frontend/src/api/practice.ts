@@ -67,6 +67,8 @@ export interface RunSummary {
   catalog_name: string;
   answered: number;
   correct_count: number;
+  /** Lines that took part of their mark. */
+  partial_count: number;
   incorrect_count: number;
   /** Essays and anything a teacher marks by hand: counted, never scored as wrong. */
   manual_count: number;

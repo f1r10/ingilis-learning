@@ -151,7 +151,7 @@ export default function Questions() {
           <option value="">{t("questions.all_types")}</option>
           {(types.data?.items || []).map((spec) => (
             <option key={spec.type} value={spec.type}>
-              {spec.label}
+              {t(`questions.type_${spec.type}`)}
             </option>
           ))}
         </select>
@@ -367,7 +367,7 @@ function QuestionRow({
         ) : null}
         {row.has_media ? <span className="chip">{t("questions.has_media")}</span> : null}
       </td>
-      <td className="small">{row.type}</td>
+      <td className="small">{t(`questions.type_${row.type}`)}</td>
       <td className="small">{row.level || "—"}</td>
       <td className="small muted">{[...row.topic_names, ...row.tag_names].join(", ") || "—"}</td>
       <td className="small">{t(`status.${row.status}`)}</td>
