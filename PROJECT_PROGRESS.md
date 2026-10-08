@@ -3,12 +3,11 @@
 Continuation state file. Reread this after any context loss and keep going - do not
 re-plan work that is already recorded as done here.
 
-- Current phase: **Phase 5 - reading, listening and media** (Phases 1-4 accepted)
+- Current phase: **Phase 7 - exams, assignments and the attempt engine** (Phases 1-6 accepted)
 - Git: branch `main`, remote `https://github.com/f1r10/ingilis-learning.git`
-- Last commits: Phase 1-2 `2ab3294`, Phase 3 `c650bf5 feat(phase-3): complete question
-  bank and question engine`, Phase 4 `feat(phase-4): complete vocabulary module` - all
-  pushed. `git rev-parse HEAD` is the authoritative tip; the Phase 5 commit must rewrite
-  this line with its own SHA
+- Last commits: Phase 1-2 `2ab3294`, Phase 3 `c650bf5`, Phase 4 `20e5006`, Phase 5 `53911f2`,
+  Phase 6 `feat(phase-6): complete catalogs and practice` - all pushed. `git rev-parse HEAD`
+  is the authoritative tip; each phase commit rewrites this line with its own SHA
 
 ---
 
@@ -68,8 +67,8 @@ language, never developer jargon. Heavy operations run in the worker.
 | 3 | Question bank + full question engine (all types, `QuestionVersion` immutability) | **accepted - `verify_phase12.sh` exit 0, 13/13 steps, 0 mandatory skips** |
 | 4 | Vocabulary module | **accepted - `verify_phase12.sh` exit 0, 13/13 steps, 0 mandatory skips, live browser click-through on teacher and learner screens** |
 | 5 | Reading + listening + media libraries (object storage) | **accepted - `verify_phase12.sh` exit 0, 13/13 steps, 0 mandatory skips, live browser click-through on teacher and learner screens** |
-| 6 | Catalogs + practice | not started - **next** |
-| 7 | Exams + assignments + attempt engine + grading | not started |
+| 6 | Catalogs + practice | **accepted - `verify_phase12.sh` exit 0, 13/13 steps, 0 mandatory skips, live browser click-through on teacher and learner screens** |
+| 7 | Exams + assignments + attempt engine + grading | not started - **next** |
 | 8 | Document import + review pipeline | not started |
 | 9 | Monitoring + activity | not started |
 | 10 | Analytics | not started |
@@ -424,7 +423,137 @@ player, replay counting, transcript only when allowed), routes `/reading`,
     restarts the count, and the server-authoritative clock arrives with the Phase 7 attempt
     engine.
 
-## 7. Working commands
+## 7. Phase 6 - catalogs + practice
+
+Backend, three new services and two routers:
+
+* `app/services/catalog_service.py` - the catalog as what it is: an ordered list of
+  references. `to_read` resolves each reference against the live bank row (so `title`,
+  `detail`, `state` and the level are never stored strings), the folder tree through
+  `parent_id` (4 levels, siblings cannot share a name, a node cannot be moved inside
+  itself, and the depth cap is measured on the way down as well as up), the availability
+  chain (a learner reaches a catalog only when it and every folder above it is `ready` and
+  alive), all-or-nothing item adding, whole-list reorder that refuses an omitted id, the
+  block reference validated against the passage it claims to belong to (`broken_block`
+  rather than the whole text served as a lesson), the trash veto that names how many
+  folders are still inside, the bulk loop that keeps acting on what it refused until it
+  stops making progress, and per-id answers (`updated` / `refused` + reason / `not_found`).
+* `app/services/activity_service.py` - the only writer of `activity_event`. Append-only:
+  a verdict is never edited in place, a second mark is a second row, `occurred_at` is
+  written here rather than left to a default, and the coarse `device`/`browser` labels come
+  from the client's own header with truncation instead of refusal (losing the row to a long
+  header would lose the answer with it).
+* `app/services/practice_service.py` - the run. `start_run` issues the 32-hex token and
+  puts the shuffle seed on the start event; `_build_steps` resolves every reference through
+  the same projection the teacher's preview uses and counts what it had to skip;
+  `answer` re-authorises the token against the learner, grades with the bank's own engine
+  and freezes the grade in the payload; `resume_run` re-derives the served order from the
+  seed and writes nothing; `finish` is idempotent and releases held marks;
+  `build_summary` rebuilds score/counts from the log alone; `known`/`learning` marks are per
+  learner per word across the whole product; favorites are pointers that keep naming a gone
+  exercise as gone.
+* Endpoints: `catalogs.py` (10 paths) and `practice.py` (+`favorites_router`, 11 paths
+  together). Schemas `catalog.py` / `practice.py`. The API is now 109 paths / 147 operations,
+  22 of them under `/student/`.
+* Phase 6 also widened Phase 5: `only_set_ids` threading through
+  `passage_service.list_sets` / `learner_tree` and `reading_service` /
+  `listening_service.learner_detail`, so one practice step can be served one block of a
+  text or recording instead of the whole passage.
+
+Migration: `0005_catalog_item_unique` - adds `uq_catalog_item_reference`
+(`catalog_id, kind, ref_id`, unique) and downgrades by dropping only itself. It is added,
+not swapped: `catalog_item` has no soft delete, so there is no trashed twin to forgive, and
+a reference the teacher removed can be added again. `0001_bootstrap` through `0004` are
+untouched; `test_migration_offline_sql` now pins the `CREATE UNIQUE INDEX` and its
+`DROP INDEX` reversal, and `test_migration_schema_consistency` insists the new index is
+declared by a model.
+
+Rules that are now contractual: a Catalog is not an Exam and holds no content of its own;
+grouping writes no `QuestionVersion`; one catalog names one piece of content once, enforced
+in the database and not only in the service; a reference to a missing or trashed row is
+refused at the door; adding is all-or-nothing; a bulk action answers per id; a preview
+writes nothing and carries no token; a run is its events, and its summary is a read of them;
+resuming never re-shuffles and never writes a second start; `after_session` withholds every
+verdict until the finish; a type nobody can grade is reported as ungraded, never as zero;
+`time_spent_seconds` is stored as reported and no server-side clock is implied.
+
+Frontend (no redesign): `api/catalogs.ts`, `api/practice.ts`; `pages/Catalogs.tsx` (tree with
+both counts, bank/trash views, filters, sort, and the selection toolbar that keeps refused
+rows on screen with the server's reason); `pages/CatalogEditor.tsx` (settings, reference list
+with reorder, a picker per kind filtered by level that shows what is already in the lesson,
+the block picker, the preview); `pages/StudentPractice.tsx` (the shelf with the learner's own
+run counts, plus the saved list) and `pages/StudentPracticeRun.tsx` (run, rail, result
+screen); `components/PracticeStep.tsx` and `components/AnswerWidget.tsx`, the same widgets
+the teacher's own previews use, so an exercise cannot look different in a lesson than it did
+in the bank. Routes `/catalogs`, `/catalogs/new`, `/catalogs/:id`, `/student/practice`,
+`/student/practice/run`; nav entries in both roles (and `end` on the learner's Home link, so
+it stops being active on every student sub-page); 780 leaves per locale, four key-identical
+files.
+
+### Defects found in this phase and fixed at the root
+
+| Defect | Fix |
+| --- | --- |
+| **A block could never be chosen.** `BlockPicker`'s query was gated on `enabled: Boolean(setId)`, so a catalog reference that had no block yet asked for none, and the panel the teacher opened to pick one listed only "All of it" | enabled becomes `Boolean(setId) || open`: the list is fetched when the row is closed (it has to name the block it points at) *and* when the panel opens. Rebuilt and driven in the browser: the reading reference now binds "After you read" and the listening one "Listen once", and both titles show on the closed rows |
+| **The learner was promised a marking that no phase performs.** An essay came back `requires_manual` and the UI said "Waiting for your teacher" - in practice nothing feeds a grading queue, and the code's own comment on the neighbouring branch says there is no teacher in the loop | the copy now states what the server actually did: `practice.not_auto_marked` "Not marked automatically", in all four locales, at all three call sites (`AnswerWidget`, the result chip, the summary count). Verified against the built bundle (`Waiting for your teacher` absent, the new string present) and on the finished run's screen: "1 not marked automatically" |
+| `session_factory` had no infrastructure guard of its own, so a Phase 6 test that drove the HTTP surface through it ran in an offline pass and failed on authentication instead of skipping with the reason the rest of the suite gives | the fixture now depends on `migrated_schema`, so the guard is the same one every other integration fixture uses |
+| The learner nav marked "Home" active on every `/student/...` screen, because `NavLink` matches by prefix | `end` on that link |
+
+Deliberately **not** changed: `Normalization.ignore_punctuation` stays `False` by default, so
+a translation answered with the sentence's own full stop kept is graded against the key as
+written. It is a teacher's switch, exposed in the question editor's "Answer matching" group
+(punctuation / articles / accents) for `short_answer`, `gap_fill` and `translation`, and
+`test_normalization_switches_are_honoured` pins both directions. Weakening it to make one
+click-through look better would have silently changed how every existing key is graded.
+
+### Evidence
+
+- **Acceptance gate, clean room: `bash scripts/verify_phase12.sh` exit 0, passed steps 13/13**
+  with `unit/static: 457 passed | 0 skipped`, `integration (Postgres+Redis+MinIO): 434 passed |
+  0 skipped`, `MinIO storage round-trip: 11 passed | 0 skipped`, and step 13 executing the
+  `expire_attempts` cron against live PostgreSQL. Its own throwaway project and volumes were
+  removed by the script afterwards.
+- **Full live suite, nothing skipped: `891 passed in 690.60s (0:11:30)`, EXIT=0, `grep -c
+  SKIPPED` = 0** against the dev stack's PostgreSQL + Redis + MinIO (Windows venv,
+  `.tmp/live.env` sourced, storage keys derived from it and never printed). Offline half
+  alone: **468 passed**, `ruff check app tests migrations scripts` clean.
+- Phase 6's own tests: `test_catalog_rules` **47** and `test_practice_rules` **53** offline,
+  `test_catalog_db` **31** and `test_practice_db` **35** live - the last two re-run alone
+  with `-rs` to prove it: **66 passed, 0 skipped**.
+- `docker build frontend` (`tsc -b && vite build`) green, twice: once for the `BlockPicker`
+  fix and once for the copy fix. The served bundle is grepped inside the running container -
+  `Not marked automatically` present, `Waiting for your teacher` absent.
+- Browser click-through on a throwaway `-p llp_ui` stack (own ports, own volumes, torn down
+  with `down -v`), driven as a real teacher session and a real learner session, with every
+  row created through the product's own HTTP API rather than inserted behind its back:
+  * catalog tree built live: unit + lesson under it, references added from all four banks,
+    a duplicate reference refused, reorder applied, preview shown, publish, then the bulk
+    toolbar - the parent's trash **refused** with the server's own sentence ("this catalog
+    still holds 1 folder(s) inside it") and the loop that takes a unit and its lessons in
+    one selection, restore verified afterwards.
+  * block binding, which is what caught the `BlockPicker` defect: after the fix the reading
+    reference reads "Block: After you read" and the listening one "Block: Listen once".
+  * one learner run covering **every widget the engine ships**: multiple choice, multi select
+    (partial selection graded all-or-nothing), true/false, short answer, gap fill (2 of 2),
+    matching (3 of 3), ordering, translation, essay (server `requires_manual`, counted, not
+    zeroed), plus a reading-block question and a listening-range question served with their
+    context. Word-card marks and "Save for later" exercised on the same run.
+  * result screen read back from the log: `7 of 23`, 11 answered, 4 right, 6 wrong,
+    1 not marked automatically, per-question lines with the stored explanations.
+  * resume, proven on the server rather than only on the screen: a second run was opened by
+    "Do it again", then the tab was really reloaded. `GET /runs/{id}/steps` returned the
+    **same 16-step order** (identical `kind:ref_id` sequence) and `activity_event` still
+    held exactly **one `practice_run_start` per session** - 14 answers, 1 finish, 5 favorite
+    adds, 1 remove, 1 `practice_mark_known`, 1 `practice_mark_learning`.
+  * the saved shelf (`/student/practice?tab=saved`) names each pointer from its own row
+    ("Which of these are kinds of weather? / Question / multi_select") and "Take off the
+    list" dropped the row and appended `favorite_remove` without touching the add.
+- Carried, each owned by a named phase: the `0 s` duration on a listening picker row (Phase
+  12 probe), physical object GC (Phase 11), server-side replay and exam timers (Phase 7),
+  English server *reason* strings inside a Turkish/Russian/Azerbaijani interface and the
+  `div`-based login tabs (Phase 13).
+
+## 8. Working commands
 
 ```bash
 # mandatory acceptance (WSL / Linux / macOS / Windows; needs Docker, no make)
@@ -455,7 +584,7 @@ bash state does not persist between commands, so `cd` in every command.
 WSL path for the same repo: `/mnt/c/Users/firon/Documents/Qoder/2026-10-06/1438da7f`
 (run with `wsl -e bash -lc '...'`).
 
-## 8. Environment facts worth not re-discovering
+## 9. Environment facts worth not re-discovering
 
 - WSL Ubuntu: Docker 29.1.3 + Compose 2.40.3 working, internet reachable,
   `python3` = 3.14.4 with **no pip/ensurepip** (venv needs the pip bootstrap), no
@@ -472,9 +601,35 @@ WSL path for the same repo: `/mnt/c/Users/firon/Documents/Qoder/2026-10-06/1438d
 - bash 5.3.9 keeps the original exit status through an `EXIT` trap whose action merely
   runs a function; `exit N` inside the trap overrides it. Proven with isolated scripts,
   so `trap 'cleanup' EXIT` in the gate is sound and a failed gate does exit non-zero.
-- The dev stack now runs a MinIO too (9000/9001 published), so the whole suite can run
-  against it with **zero skips**; the acceptance gate still brings its own MinIO from the
-  pinned Chainguard image in its own project.
+- The dev stack runs a MinIO too (9000/9001 published), so the whole suite can run against
+  it with **zero skips** - but only with the credentials the volume was *initialised* with.
+  The repo `.env` names a different root pair, so `_minio_probe()` answered
+  `InvalidAccessKeyId` and **114 storage-guarded tests skipped on a run that looked live**
+  (777 passed / 114 skipped). Fix without touching a volume: read the running container's
+  own `MINIO_ROOT_*` into the gitignored `.tmp/live.env` and never echo them -
+  `docker inspect <minio> --format "{{range .Config.Env}}{{println .}}{{end}}" | grep MINIO_ROOT_`
+  redirected into the file. Then the same command reports **891 passed, 0 skipped**.
+  A skip in the developer loop is a signal to read, not a result to publish.
+- **Browser automation against this UI.** A `click` on a snapshot `uid` frequently does not
+  fire the React `onClick` (stale uid) - drive it with `evaluate_script` and
+  `element.click()` instead. React-controlled inputs need the *native* setter before the
+  `input` event: `Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set
+  .call(el, v); el.dispatchEvent(new Event("input", {bubbles: true}))` (textareas use
+  `HTMLTextAreaElement.prototype`, selects use the `select` prototype plus a `change` event).
+  `evaluate_script` gives up at 15 s, so batch at most two or three interactions per call.
+  The login role tabs are `<div class="tab">`, not buttons.
+- Reading the verification stack's database is a one-liner, and the table names are
+  **singular** (`activity_event`, `favorite`, `catalog_item`):
+  `docker exec -i "$PG" sh -c 'exec psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -A -t -f -' < q.sql`
+  - pass the SQL on stdin from a file rather than fighting nested quotes, and note that a
+  `count(distinct (a, b))` is not valid here.
+- The frontend container serves a **built** bundle: after any `frontend/src` edit,
+  `docker compose ... build frontend && up -d frontend`, then grep the served
+  `assets/index-*.js` for the string you changed. The asset hash changing is the proof the
+  build was not cached.
+- Invoking WSL from Git Bash: `wsl.exe -- bash -lc '...'` (a bare `wsl -lc` is rejected);
+  never hand `/mnt/...` paths to `wsl.exe` as arguments (MSYS rewrites them) - either keep
+  them inside the single-quoted body or prefix the call with `MSYS_NO_PATHCONV=1`.
 - The developer stack (`language-learning-platform` project) may already be running
   on 5432/6379 - the verifier must keep using its own project and auto-chosen ports.
 - Running the whole suite against the live stack takes **~23 minutes** on this machine.
@@ -508,10 +663,10 @@ WSL path for the same repo: `/mnt/c/Users/firon/Documents/Qoder/2026-10-06/1438d
   stack on the `.env` ports needs the frontend's API base to be same-origin (`/api/v1`), not
   a literal `localhost:8000`.
 
-## 9. Known defects / blockers
+## 10. Known defects / blockers
 
-None open. Phases 1-2, 3, 4 and 5 are accepted; the work now is Phase 6 (catalogs and
-practice).
+None open. Phases 1-2 through 6 are accepted; the work now is Phase 7 (exams, assignments
+and the attempt engine).
 
 Carried forward, each one real and each one owned by a named later phase rather than
 left unmentioned:
@@ -528,7 +683,9 @@ left unmentioned:
 | The learner player's replay counter is counted in the tab (`StudentListening.tsx`), so a refresh starts the count again. The rule itself is the server's and is delivered with the payload; counting it durably needs an attempt, which does not exist yet | Phase 7 attempt engine |
 | Sentences the server refuses with are shown in English inside a Turkish, Russian or Azerbaijani interface. Many distinct refusals share the single `validation_failed` code, so the client cannot look the wording up; the interface copy itself is complete in all four locales and this is only the server's prose | Phase 13, with stable reason keys per refusal |
 | Labels the server supplies - question types from `/questions/types`, vocabulary parts of speech and language names - arrive in English and are printed as they came. They are data, not interface chrome, so they need the same reason-key treatment rather than a client-side guess | Phase 13 |
-| A learner can read a listening, a reading and a word card, but cannot answer: `LearnerPreview` renders questions as a deliberately read-only projection (every control `readOnly`), because an answer needs an attempt to store it | Phase 6 practice, Phase 7 attempts |
+| A learner can answer a question only inside a practice run: `LearnerPreview` is still the projection the standalone `/student/reading` and `/student/listening` screens use (every control `readOnly`), because a run's log is keyed to a catalog and an ad-hoc answer needs an attempt to belong to | Phase 7 attempt engine |
+| Nothing on the teacher's side reads the practice log yet. `activity_event` already holds every answer, mark and favorite with its `session_id`, and the learner's own summary is rebuilt from it - but a teacher has no timeline surface to open | Phase 9 monitoring/activity |
+| An essay or a written answer in practice is filed and never marked: there is no grading queue behind it, which is why the learner's screen says "Not marked automatically" rather than promising a teacher | Phase 7 (manual grading on attempts) |
 
 Closed by Phase 5: a word's pronunciation can now be recorded once in the media library
 and attached to the word - `audio_asset_id` round-trips, and the study card plays it

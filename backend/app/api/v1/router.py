@@ -6,10 +6,12 @@ from fastapi import APIRouter
 from app.api.v1.endpoints import (
     admin,
     auth,
+    catalogs,
     groups,
     health,
     listening,
     media,
+    practice,
     questions,
     reading,
     settings,
@@ -37,3 +39,6 @@ api_router.include_router(reading.router)
 api_router.include_router(reading.student_router)
 api_router.include_router(listening.router)
 api_router.include_router(listening.student_router)
+api_router.include_router(catalogs.router)
+api_router.include_router(practice.router)
+api_router.include_router(practice.favorites_router)

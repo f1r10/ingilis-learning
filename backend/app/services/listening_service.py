@@ -583,13 +583,21 @@ async def _question_payloads(
     }
 
 
-async def learner_detail(db: AsyncSession, row: Listening, *, served_to_admin: bool = False) -> dict:
+async def learner_detail(
+    db: AsyncSession,
+    row: Listening,
+    *,
+    served_to_admin: bool = False,
+    only_set_ids: list[uuid.UUID] | None = None,
+) -> dict:
     """The player, the words if the teacher allowed them, and the answerable questions."""
 
     async def project(session, ids):
         return await _question_payloads(session, ids, served_to_admin=served_to_admin)
 
-    sets, unfiled = await passage_service.learner_tree(db, KIND, row.id, project=project)
+    sets, unfiled = await passage_service.learner_tree(
+        db, KIND, row.id, project=project, only_set_ids=only_set_ids
+    )
     audio = None
     duration = None
     if row.media_asset_id is not None:

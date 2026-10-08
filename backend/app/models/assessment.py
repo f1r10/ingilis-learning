@@ -80,7 +80,13 @@ class CatalogItem(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
     catalog: Mapped[Catalog] = relationship(back_populates="items")
 
-    __table_args__ = (Index("ix_catalog_item_order", "catalog_id", "position"),)
+    __table_args__ = (
+        Index("ix_catalog_item_order", "catalog_id", "position"),
+        # A catalog names one piece of content once. The service refuses the duplicate in
+        # the teacher's own words; this index is what makes that true for two writes that
+        # happen at the same moment. See migration `0005`.
+        Index("uq_catalog_item_reference", "catalog_id", "kind", "ref_id", unique=True),
+    )
 
 
 # --------------------------------------------------------------------------- #

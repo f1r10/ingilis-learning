@@ -387,13 +387,18 @@ async def client(clean_db):
 
 
 @pytest_asyncio.fixture
-async def session_factory():
+async def session_factory(migrated_schema):
     """Build extra isolated app sessions inside one test (each with its own cookie jar).
 
     Needed for multi-session behaviour (session_epoch, password change, races),
     where the single `client` session cannot observe two logins at once. Clients
     only touch the database during the test body, so this composes with
     `clean_db`/`db_ready` regardless of fixture setup order.
+
+    It leans on `migrated_schema` for the availability guard: a test that drives
+    the HTTP surface through this factory still needs a database, and without the
+    link it ran (and failed on authentication) in an offline pass instead of
+    skipping with the reason the rest of the suite gives.
     """
     opened: list[AsyncClient] = []
 

@@ -390,11 +390,19 @@ async def _question_payloads(
     }
 
 
-async def learner_detail(db: AsyncSession, row: Reading, *, served_to_admin: bool = False) -> dict:
+async def learner_detail(
+    db: AsyncSession,
+    row: Reading,
+    *,
+    served_to_admin: bool = False,
+    only_set_ids: list[uuid.UUID] | None = None,
+) -> dict:
     async def project(session, ids):
         return await _question_payloads(session, ids, served_to_admin=served_to_admin)
 
-    sets, unfiled = await passage_service.learner_tree(db, KIND, row.id, project=project)
+    sets, unfiled = await passage_service.learner_tree(
+        db, KIND, row.id, project=project, only_set_ids=only_set_ids
+    )
     return r_schemas.ReadingLearnerRead(
         id=row.id,
         title=row.title,

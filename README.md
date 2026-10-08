@@ -9,11 +9,13 @@ content / examination / analytics platform. It is **not** hard-coded to English 
 its interface ships in **Azerbaijani, English, Russian and Turkish**. All branding is
 editable in Admin Settings — the platform name is never hard-coded.
 
-> **Current status:** delivery phases 1-5 are implemented and accepted — the complete
+> **Current status:** delivery phases 1-6 are implemented and accepted — the complete
 > domain schema, authentication, users and groups, branding + localization (az/en/ru/tr),
 > the question bank with the full question engine, the vocabulary bank with learner study
-> cards, and the reading, listening and media modules on S3/MinIO object storage. Still to
-> come: catalogs and practice, exams/attempts and grading, document import and review,
+> cards, the reading, listening and media modules on S3/MinIO object storage, and the
+> catalog builder with the learner's practice shelf: runs, per-step marks, saved words and
+> questions, and an activity log a run's summary is rebuilt from. Still to
+> come: exams/attempts and grading, document import and review,
 > monitoring, analytics, exports/backups/restore, the local AI/OCR/STT/translation
 > adapters, and the final security and performance pass. The adapter protocols and the
 > worker exist now as disabled-by-default paths on purpose — the product must stay fully
@@ -329,6 +331,31 @@ GET/POST /api/v1/listening/{id}/sets | /sets/reorder
 PATCH/DELETE /api/v1/listening/sets/{set_id}    a block may be a slice of the recording
 GET  /api/v1/listening/{id}/preview    the player a learner would get
 GET  /api/v1/student/listening | /meta | /{id}  ready recordings; transcript only if allowed
+
+GET  /api/v1/catalogs/meta             kinds, views, statuses, timings, the caps
+GET  /api/v1/catalogs                  q/kind/language/level/status/view(bank|trash|all)/
+                                       parent_id/root_only/sort/order/page/page_size
+POST /api/v1/catalogs                  201; a folder and a list at once, depth capped at 4
+GET/PATCH/DELETE /api/v1/catalogs/{id} read (with the path above it) / rename / soft trash,
+                                       which takes the folders inside it too
+POST /api/v1/catalogs/{id}/restore | /status | /preview
+GET  /api/v1/catalogs/{id}/items       the references, each described from its own bank row
+POST /api/v1/catalogs/{id}/items       append; all checked or nothing written, no duplicates
+POST /api/v1/catalogs/{id}/items/reorder  the whole list in the new order
+PATCH/DELETE /api/v1/catalogs/items/{item_id}  re-point one block / drop one reference,
+                                       which never touches the content it named
+POST /api/v1/catalogs/bulk             status/trash/restore/set_level, answered per id
+
+GET  /api/v1/student/practice/meta     the learner's own filter options
+GET  /api/v1/student/practice/catalogs  openable collections, with this learner's run counts
+GET  /api/v1/student/practice/catalogs/{id}  the same row, plus their recent runs
+POST /api/v1/student/practice/catalogs/{id}/run  opens a run, returns a 32-hex session token
+GET  /api/v1/student/practice/runs/{session}      the run as its activity log describes it
+GET  /api/v1/student/practice/runs/{session}/steps  the steps, in the order they were served
+POST /api/v1/student/practice/answer   one answer, graded by the bank's own rules
+POST /api/v1/student/practice/runs/{session}/finish  closes the run and releases the marks
+GET  /api/v1/student/practice/catalogs/{id}/known | POST the same  known / learning marks
+GET  /api/v1/student/favorites | POST "" | POST /remove  what the learner saved to revisit
 ```
 
 Admin sessions are stateless signed cookies, but each embeds a `session_epoch`;
@@ -416,10 +443,11 @@ student side is tuned for mobile.
 
 Implemented: **1) shell/branding/localization, 2) auth + users/groups,
 3) Question Bank + full question engine, 4) vocabulary bank and study cards,
-5) reading, listening and the media library on object storage** + the
+5) reading, listening and the media library on object storage,
+6) catalogs and practice** + the
 complete schema foundation and adapter/worker skeletons.
 
-Next: 6) catalogs · 7) exams/attempts · 8) document import + review · 9) monitoring/activity
+Next: 7) exams/attempts · 8) document import + review · 9) monitoring/activity
 · 10) analytics · 11) exports/backups · 12) local AI/OCR/transcription · 13) security &
 performance hardening.
 
@@ -561,6 +589,104 @@ Migrations: `0003_membership_and_checksum` (the two set-membership tables with t
 unique and ordering indexes, and `uq_media_asset_checksum`) and
 `0004_media_reference_indexes` (the three FK-side indexes media joins on). `0001_bootstrap`
 and the Phase 3/4 revisions are untouched, and both new revisions downgrade.
+
+## Catalogs and practice (Phase 6)
+
+**A catalog is a table of references, and that is the whole design.** Each row of
+`catalog_item` names one kind (`question`, `vocabulary`, `reading`, `listening`) and one id
+in the bank that owns it, plus a `config` that may narrow it to a single block of that
+text. Nothing is copied: correct a question in the bank and every collection that uses it
+is corrected, and a catalog is always current because there is no second copy to go stale.
+`uq_catalog_item_reference` from `0005_catalog_item_unique` makes `(catalog_id, kind,
+ref_id)` unique in the live rows, so the same exercise cannot appear twice in one lesson
+while still allowing two lessons to use it - and a reference a teacher removed can be added
+again, because trashing the row leaves no tombstone in its way.
+
+**The same table is a folder.** `parent_id` builds a tree of units and lessons, capped at
+four levels deep, and a folder practises on its own: it may hold references as well as
+children. The list therefore reports both numbers - how many references and how many
+folders - because a teacher who cannot see that a unit contains four lessons cannot tell
+an empty collection from an unopened one. A folder is never binned out from under what is
+inside it: trashing one that still holds live folders is refused, and naming how many. A
+bulk selection that holds a unit and its lessons is the exception - the action loops over
+what it refused until it stops making progress, so the whole unit leaves the class's list
+in one click while a folder that is genuinely still blocked is reported with its reason.
+Restoring a catalog whose folder is itself trashed is allowed: the teacher must be able to
+move it, and the chain rule keeps it invisible to learners until the folder is sorted out.
+
+**Reading a reference is a join, not a stored string.** `title`, `detail` and `state` are
+taken from the bank's row on every read, so a catalog cannot lie about its contents: if the
+word behind a reference is now a draft, or was deleted, or moved to another level, the row
+says `draft`, `missing` or the new level by itself. A state with no bank row behind it is
+the honest answer to "what will my class see", and `available_to_learner` is that state
+compressed to a yes. When a reference names a block of a text, the block is checked against
+that text: a group that was deleted, or that belongs to a different passage, puts the row in
+`broken_block` rather than serving the whole text and calling it the lesson.
+
+**Adding is all-or-nothing, and the answer says what was added.** Every id is resolved
+before anything is written, so a list of thirty references with one typo in it writes
+nothing rather than twenty-nine things and a half-built lesson. Reordering takes the whole
+list of item ids and refuses a request that omits one, because a partial order is a
+guessed order. Bulk actions answer per id (`updated`, `refused` with the server's reason,
+`not_found`) - "3 of 40 published" is not something a teacher can act on.
+
+**A preview is the learner's screen without the write.** `GET /catalogs/{id}/preview` builds
+the same steps, applies the same skipping and returns the same key-free projections, minus
+the session token: nothing was started, so nothing can be filed against it. That is why the
+teacher's preview and the learner's run cannot drift apart - they are the same function.
+
+**Practice leaves a log, not a session table.** Opening a run issues a 32-hex token and
+appends a `practice_run_start` event; each answer appends `practice_answer` with the grade
+frozen into the payload; finishing appends `practice_run_finish`. Nothing is updated in
+place, so a run's history is the activity log, and `GET /student/practice/runs/{token}`
+rebuilds the score from those rows. A closed tab, a different device or a reload resumes
+from the `shuffle_seed` stored in the start event - the order is re-derived, not
+re-shuffled, and resuming does not write a second start. `time_spent_seconds` is what the
+learner's screen measured and is stored as reported, with no server-side clock implied: an
+authoritative timer is the attempt engine's job (Phase 7), not a practice shelf that a
+learner may leave open.
+
+**Marks belong to the learner, not to the lesson.** `known` / `learning` are recorded per
+word across the whole product, so a word marked in one catalog reads as marked in the next,
+which is what makes "words I still need" a list worth keeping. A catalog that switches
+`known_states_enabled` skips those words when a run opens, and says how many it skipped -
+the number, not the reason: the state of somebody else's draft is not a learner's business.
+Feedback timing is the teacher's decision and is honoured by the server: under
+`after_session` each answer returns `withheld`, and the marks appear when the run finishes.
+An essay is never called wrong for being unwritten - it comes back
+`requires_manual` and is counted as an answer the server did not mark, never as a zero and
+never as a mark somebody promised to give: nothing in practice feeds a teacher's grading
+queue, so the learner's own screen says "Not marked automatically".
+
+**Learners see only what is actually openable.** A catalog appears when it is `ready` and
+every folder above it is, and each reference has to be `ready` and alive at the moment the
+run is built; whatever is not is skipped and counted. Favorites are a saved list of
+pointers, and a saved exercise whose content has since gone is still listed as gone rather
+than vanishing from the learner's own shelf.
+
+Frontend (no redesign): `api/catalogs.ts` and `api/practice.ts` carry the same payloads the
+server answers, with no field invented for a component's convenience.
+`pages/Catalogs.tsx` is the tree - folders and lessons in one list with both counts, the
+bank/trash views, level and status filters, sort, and a selection toolbar whose per-id answer
+leaves refused rows on screen with the server's reason instead of a bare "done".
+`pages/CatalogEditor.tsx` is the one editing screen: name, level, shuffle, feedback timing,
+known-states switch, the reference list with reorder, a picker per reference that filters the
+four banks by level and shows what is already in the lesson, the block picker that narrows a
+text or recording to one set, and the preview that answers "what my class will see" from the
+same projection the learner gets. On the learner's side,
+`pages/StudentPractice.tsx` is the shelf (openable collections with their own run counts,
+plus a saved list that names each saved thing from its own row),
+`pages/StudentPracticeRun.tsx` is the run and the result screen, and
+`components/PracticeStep.tsx` puts the text, the recording, the word card or the exercise in
+front of `components/AnswerWidget.tsx` - the same widget the teacher's own preview uses, so a
+question cannot look different in the lesson than it did in the bank.
+Routes `/catalogs`, `/catalogs/new`, `/catalogs/:id`, `/student/practice`,
+`/student/practice/run`, nav entries in both roles, and az/en/ru/tr copy (780 leaves per
+locale, all four key-identical, verified by the offline locale contract).
+
+Migrations: `0005_catalog_item_unique` (the unique live-row index above - added, not
+swapped, since `catalog_item` has no soft delete and so no trashed twin to forgive; it
+downgrades by dropping only itself). `0001_bootstrap` through `0004` are untouched.
 
 ## Tests
 

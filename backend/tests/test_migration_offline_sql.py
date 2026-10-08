@@ -255,3 +255,8 @@ def test_every_committed_revision_appears_in_the_rendered_chain(
     ):
         assert f"CREATE INDEX {index} ON {table}" in upgrade_sql, f"{index} never rendered"
         assert f"DROP INDEX {index}" in downgrade_sql, f"{index} never reversed"
+
+    # 0005: a catalog names one piece of content once.
+    assert "CREATE UNIQUE INDEX uq_catalog_item_reference ON catalog_item" in upgrade_sql
+    assert "(catalog_id, kind, ref_id)" in upgrade_sql
+    assert "DROP INDEX uq_catalog_item_reference" in downgrade_sql

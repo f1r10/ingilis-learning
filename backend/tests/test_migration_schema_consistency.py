@@ -128,6 +128,7 @@ def test_every_extra_index_after_bootstrap_is_declared_by_a_model(
         f"declared but never created: {sorted(orm_only - added)}"
     )
     assert "uq_vocabulary_word_language" in added, "Phase 4 must add the vocabulary word index"
+    assert "uq_catalog_item_reference" in added, "Phase 6 must add the catalog reference index"
 
 
 def test_downgrade_drops_every_created_table(migration_meta: MetaData) -> None:

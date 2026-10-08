@@ -571,24 +571,29 @@ def set_read(kind: PassageKind, row: Any, questions: list[SetQuestionRow]) -> di
 
 
 async def list_sets(
-    db: AsyncSession, kind: PassageKind, passage_id: uuid.UUID, *, ready_only: bool = False
+    db: AsyncSession,
+    kind: PassageKind,
+    passage_id: uuid.UUID,
+    *,
+    ready_only: bool = False,
+    only_set_ids: list[uuid.UUID] | None = None,
 ) -> list[dict]:
     """Every set of a passage, with its questions.
 
     One passage has a handful of sets, so the whole tree is fetched in two queries
     instead of an endpoint per set; the editor that draws it needs all of it at once.
+
+    `only_set_ids` narrows the tree to the blocks named, which is what a practice step
+    built from one block of a recording asks for. A name that is not a set of this
+    passage simply matches nothing, so the caller gets an empty tree rather than a
+    lesson from somewhere else.
     """
     fk = getattr(kind.set_model, kind.passage_fk)
+    stmt = select(kind.set_model).where(fk == passage_id)
+    if only_set_ids is not None:
+        stmt = stmt.where(kind.set_model.id.in_(only_set_ids))
     rows = (
-        (
-            await db.execute(
-                select(kind.set_model)
-                .where(fk == passage_id)
-                .order_by(kind.set_model.position, kind.set_model.id)
-            )
-        )
-        .scalars()
-        .all()
+        (await db.execute(stmt.order_by(kind.set_model.position, kind.set_model.id))).scalars().all()
     )
     by_set = await _questions_by_set(db, kind, [row.id for row in rows], ready_only=ready_only)
     built = [set_read(kind, row, by_set[row.id]) for row in rows]
@@ -620,7 +625,12 @@ async def unfiled_questions(
 
 
 async def learner_tree(
-    db: AsyncSession, kind: PassageKind, passage_id: uuid.UUID, *, project: Any
+    db: AsyncSession,
+    kind: PassageKind,
+    passage_id: uuid.UUID,
+    *,
+    project: Any,
+    only_set_ids: list[uuid.UUID] | None = None,
 ) -> tuple[list[dict], list[dict]]:
     """The passage as a learner's exercise: ready sets, with answerable question payloads.
 
@@ -632,9 +642,16 @@ async def learner_tree(
     A question named by both queries and missing from the projection has been deleted in
     the moment between them, and is dropped: an exercise that offers a question nobody
     can answer is worse than one that quietly has one fewer item.
+
+    With `only_set_ids` the tree is narrowed to the blocks named, and the unfiled pool is
+    left out: a practice step built from one block of a recording asks that block's
+    questions, and adding every loose question of the text would be a different lesson
+    than the one the catalog named.
     """
-    sets = await list_sets(db, kind, passage_id, ready_only=True)
-    unfiled = await unfiled_questions(db, kind, passage_id, ready_only=True)
+    sets = await list_sets(db, kind, passage_id, ready_only=True, only_set_ids=only_set_ids)
+    unfiled: list[dict] = []
+    if only_set_ids is None:
+        unfiled = await unfiled_questions(db, kind, passage_id, ready_only=True)
     ids = [uuid.UUID(question["id"]) for item in sets for question in item["questions"]]
     ids += [uuid.UUID(question["id"]) for question in unfiled]
     payloads = await project(db, ids)
