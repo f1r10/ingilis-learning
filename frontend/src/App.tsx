@@ -18,6 +18,8 @@ import ReadingEditor from "./pages/ReadingEditor";
 import Listenings from "./pages/Listenings";
 import ListeningEditor from "./pages/ListeningEditor";
 import MediaLibrary from "./pages/MediaLibrary";
+import Imports from "./pages/Imports";
+import ImportReview from "./pages/ImportReview";
 import Catalogs from "./pages/Catalogs";
 import CatalogEditor from "./pages/CatalogEditor";
 import Exams from "./pages/Exams";
@@ -69,6 +71,8 @@ export default function App() {
           <Route path="/listening/new" element={<ListeningEditor />} />
           <Route path="/listening/:id" element={<ListeningEditor />} />
           <Route path="/media" element={<MediaLibrary />} />
+          <Route path="/imports" element={<Imports />} />
+          <Route path="/imports/:jobId" element={<ImportReview />} />
           <Route path="/catalogs" element={<Catalogs />} />
           <Route path="/catalogs/new" element={<CatalogEditor />} />
           <Route path="/catalogs/:id" element={<CatalogEditor />} />

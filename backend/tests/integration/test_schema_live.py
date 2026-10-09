@@ -211,12 +211,19 @@ async def test_indexes_exist_are_unique_where_declared_and_ordered(db_ready, app
     # each of these is the only thing stopping a duplicate that a plain unique index would miss
     # because the column it guards is nullable. A new one has to be argued for in this list and
     # in a migration of its own.
+    # `uq_source_file_checksum` (0007) guards `checksum` on a table whose rows are trashed, not
+    # deleted: the same paper may be imported again once its first import is gone, so only the
+    # live rows may be unique. `uq_import_item_result` (0007) guards a pair of columns that are
+    # both null until a candidate is filed, and says one piece of content came from one
+    # candidate - which is exactly the half of that rule an application cannot check by itself.
     assert partial == expected_partial == {
         "uq_student_access_key_active",
         "uq_vocabulary_word_language",
         "uq_media_asset_checksum",
         "uq_assignment_student",
         "uq_assignment_group",
+        "uq_source_file_checksum",
+        "uq_import_item_result",
     }
 
 

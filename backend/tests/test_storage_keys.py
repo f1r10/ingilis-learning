@@ -10,7 +10,7 @@ import re
 
 import pytest
 
-from app.core.storage import ObjectStorage
+from app.core.storage import DISPLAY_NAME_LIMIT, ObjectStorage, safe_display_name
 
 _TOKEN_RE = re.compile(r"^[a-z_]+/[0-9a-f]{32}(\.[a-z0-9]{1,10})?$")
 
@@ -57,3 +57,32 @@ def test_overlong_extension_is_dropped_instead_of_trusted() -> None:
 def test_unsafe_namespace_is_rejected(namespace: str) -> None:
     with pytest.raises(ValueError):
         ObjectStorage.build_key(namespace, "photo.png")
+
+
+# --------------------------------------------------------------------------- #
+# The name a teacher uploaded is a label, never a path
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        (r"C:\Users\t\Desktop\lesson 1.mp3", "lesson 1.mp3"),
+        ("../../../etc/passwd", "passwd"),
+        ("weir\x00d\x07name.png", "weir d name.png"),
+        ("   spaced.jpg   ", "spaced.jpg"),
+    ],
+)
+def test_a_display_name_keeps_text_and_loses_paths(raw: str, expected: str) -> None:
+    assert safe_display_name(raw) == expected
+
+
+def test_an_absent_or_separator_only_name_is_no_name() -> None:
+    assert safe_display_name(None) is None
+    assert safe_display_name("") is None
+    assert safe_display_name("///") is None
+    assert safe_display_name("\x00\x01") is None, "control characters are not text"
+
+
+def test_an_over_long_filename_is_cut_to_the_column_it_lands_in() -> None:
+    assert len(safe_display_name("a" * 5000)) == DISPLAY_NAME_LIMIT

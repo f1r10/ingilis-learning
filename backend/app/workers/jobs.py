@@ -6,52 +6,57 @@ never run in the web request path. Job status is written back to the DB
 plain language, not as raw worker internals."""
 from __future__ import annotations
 
+import logging
 from datetime import timedelta
+from uuid import UUID
 
 from sqlalchemy import func, select
 
-from app.adapters import get_ai_provider, get_document_parser, get_ocr_provider
 from app.core import enums, security
 from app.core.config import get_settings
 from app.core.database import SessionLocal
 from app.models.content import ImportJob, Listening, MediaAsset, Question, Reading, VocabularyEntry
-from app.services import attempt_service, audit_service
+from app.services import attempt_service, audit_service, import_service
+
+logger = logging.getLogger(__name__)
 
 
 async def process_import_job(ctx: dict, import_job_id: str) -> str:
-    """Run the import pipeline for one job up to the teacher-review stage.
+    """Read one stored document into its review queue.
 
-    Extraction depends on optional OCR/document/AI adapters. When a provider is
-    disabled the job is parked as NEEDS_REVIEW with whatever native parse exists,
-    rather than silently guessing."""
-    parser, _ocr, _ai = get_document_parser(), get_ocr_provider(), get_ai_provider()
+    What the paper contains is decided by `import_service`, not here: the worker runs the
+    same function the teacher's screen later reads, so a queue cannot look different in the
+    two places it exists. This function's own job is to run it off the request path.
+
+    A second message for a paper already read answers `not_claimed`. That is redis delivering
+    the same job twice, not a mistake to punish - the queue the first delivery produced is
+    already the answer, and a worker that claimed anyway would double every candidate.
+    """
+    try:
+        job_id = UUID(import_job_id)
+    except ValueError:
+        # Nothing to mark failed: an id that names no job is a fault in the message, and the
+        # log has to say so rather than a queue sitting in Processing forever.
+        logger.warning("import message carries an id that is not a job: %r", import_job_id)
+        return "bad_id"
+
     async with SessionLocal() as db:
-        job = await db.get(ImportJob, __import__("uuid").UUID(import_job_id))
-        if not job:
-            return "not_found"
-        job.status = enums.JobStatus.PROCESSING
-        job.started_at = security.utcnow()
-        await db.commit()
-
         try:
-            if not parser.enabled():
-                # No document parser configured: nothing to auto-extract.
-                job.status = enums.JobStatus.NEEDS_REVIEW
-                job.progress = {"stage": "awaiting_document_parser", "message": "Document import needs a parser enabled in Settings"}
+            return await import_service.run_job(db, job_id)
+        except Exception:  # noqa: BLE001
+            # A worker that gives up quietly leaves a queue waiting for a reading that will
+            # never arrive. The teacher's own retry is what undoes this, so the failure is
+            # written as a failure, in words, and the detail stays in the log.
+            logger.exception("import job %s stopped unexpectedly", job_id)
+            await db.rollback()
+            job = await db.get(ImportJob, job_id)
+            if job is not None:
+                outcome, sentence = import_service.STOPPED_REFUSAL
+                job.status = enums.JobStatus.FAILED
+                job.error = sentence
+                job.finished_at = security.utcnow()
+                job.progress = {**(job.progress or {}), "stage": "failed", "outcome": outcome}
                 await db.commit()
-                return "needs_review"
-
-            # Real extraction is implemented against the chosen parser/ocr/ai here.
-            # Each extracted candidate becomes an ImportItem with a confidence so the
-            # Import Review screen can Approve / Reject / Edit / batch-approve.
-            job.status = enums.JobStatus.NEEDS_REVIEW
-            job.progress = {"stage": "extracted", "message": "Processing document"}
-            await db.commit()
-            return "ok"
-        except Exception as exc:  # noqa: BLE001
-            job.status = enums.JobStatus.FAILED
-            job.error = str(exc)
-            await db.commit()
             return "failed"
 
 

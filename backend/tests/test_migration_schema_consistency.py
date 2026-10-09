@@ -129,6 +129,36 @@ def test_every_extra_index_after_bootstrap_is_declared_by_a_model(
     )
     assert "uq_vocabulary_word_language" in added, "Phase 4 must add the vocabulary word index"
     assert "uq_catalog_item_reference" in added, "Phase 6 must add the catalog reference index"
+    assert "uq_import_item_result" in added, "Phase 8 must add the one-content-per-candidate index"
+
+
+def test_columns_added_after_bootstrap_come_from_the_models(
+    migration_meta: MetaData, cumulative_meta: MetaData, app_metadata: MetaData
+) -> None:
+    """A later revision may widen a table, but only with a column the model declares.
+
+    The index guard above has no column counterpart in the cumulative comparison: a
+    missing ``op.add_column`` and a stray one both show up as a difference between the
+    replayed schema and the models, so this test pins the shape of the diff itself -
+    which tables grew, and how.
+    """
+
+    def names(meta: MetaData) -> dict[str, set[str]]:
+        return {table: set(columns) for table, columns in column_specs(meta).items()}
+
+    baseline, current = names(migration_meta), names(cumulative_meta)
+    # a table a later revision creates wholesale is not a table it *widened*
+    added = {table: current[table] - baseline[table] for table in baseline}
+    added = {table: columns for table, columns in added.items() if columns}
+
+    assert added == {
+        "source_file": {"checksum"},
+        "import_item": {"missing", "filing", "note", "position"},
+    }, "0007 is the only revision that adds columns; a new one belongs in a new revision"
+    for table, columns in added.items():
+        assert columns <= current[table] <= set(names(app_metadata)[table]), (
+            f"{table}: {sorted(columns)} created by a revision but declared by no model"
+        )
 
 
 def test_downgrade_drops_every_created_table(migration_meta: MetaData) -> None:

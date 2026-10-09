@@ -31,8 +31,6 @@ from __future__ import annotations
 
 import hashlib
 import logging
-import os
-import re
 import tempfile
 import uuid
 from dataclasses import dataclass
@@ -48,7 +46,12 @@ from starlette.concurrency import run_in_threadpool
 from app.core import constants, enums, media_types, security
 from app.core.config import get_settings
 from app.core.exceptions import APIError, NotFound
-from app.core.storage import ObjectMissing, StorageUnavailable, get_storage
+from app.core.storage import (
+    ObjectMissing,
+    StorageUnavailable,
+    get_storage,
+    safe_display_name,
+)
 from app.models.content import Listening, MediaAsset, Question, VocabularyEntry
 from app.schemas import media as m_schemas
 from app.services import audit_service
@@ -77,8 +80,6 @@ VIEWS = ("bank", "trash", "all")
 
 #: The fields a browser may report a measurement for, and nothing else.
 MEASURABLE = ("duration_seconds", "width", "height")
-
-_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 
 #: How much of an upload is kept in memory to identify it; the rest goes to disk.
 _SPOOL_CHUNK = 1 << 20
@@ -155,20 +156,6 @@ async def library_options(db: AsyncSession) -> dict:
         "sortable": sorted(SORTABLE),
         "states": [STATE_AVAILABLE, STATE_TRASHED],
     }
-
-
-def _display_name(raw: str | None) -> str | None:
-    """The upload's own filename, kept only as a label for the teacher.
-
-    It never reaches a path: separators, control characters and an over-long name are
-    gone before the row is written, and the storage key is generated from the sniffed
-    format instead (see `_key_for`).
-    """
-    if not raw:
-        return None
-    basename = os.path.basename(raw.replace("\\", "/"))
-    cleaned = _CONTROL_CHARS.sub(" ", basename).strip()
-    return cleaned[:500] or None
 
 
 def _key_for(fmt: media_types.MediaFormat) -> str:
@@ -281,7 +268,7 @@ async def create_from_upload(
         asset = MediaAsset(
             kind=spooled.fmt.kind,
             storage_key=key,
-            original_filename=_display_name(getattr(upload, "filename", None)),
+            original_filename=safe_display_name(getattr(upload, "filename", None)),
             mime_type=spooled.fmt.mime,
             size_bytes=spooled.size,
             checksum=spooled.checksum,

@@ -85,6 +85,12 @@ class Settings(BaseSettings):
     # --- import defaults ---
     import_auto_mode_default: bool = False
     import_low_confidence_threshold: float = 0.80
+    #: The ceiling for one document handed to the importer, in megabytes. Separate from
+    #: the media library's ceilings because a document is read, not served: a 300 MB
+    #: recording is Tuesday, while a 300 MB "lesson plan" is a scanner export nobody
+    #: will parse inside a request's patience. Files above it are refused before the
+    #: bytes are stored, and `/imports/meta` publishes the number.
+    max_document_upload_mb: int = 60
 
     # --- retention & backups ---
     trash_retention_days: int = 30

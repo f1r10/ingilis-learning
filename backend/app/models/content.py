@@ -78,7 +78,13 @@ class SourceFile(UUIDPrimaryKeyMixin, TimestampMixin, SoftDeleteMixin, Base):
     """A document/source collection. A source document is NOT a question.
 
     Provenance metadata (filename, page, sheet, method) is preserved on extracted
-    content even if the physical file is deleted."""
+    content even if the physical file is deleted.
+
+    `checksum` is the sha256 of the uploaded bytes. The partial unique index below makes
+    "the same paper uploaded twice is one source" a fact rather than a habit: a teacher
+    who re-sends the file the colleague two desks away already sent gets the existing
+    source and its review queue, not a second copy of every candidate awaiting approval.
+    """
 
     __tablename__ = "source_file"
 
@@ -89,7 +95,19 @@ class SourceFile(UUIDPrimaryKeyMixin, TimestampMixin, SoftDeleteMixin, Base):
     keep_original: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     page_count: Mapped[int | None] = mapped_column(Integer)
     language: Mapped[str | None] = mapped_column(String(16))
+    checksum: Mapped[str | None] = mapped_column(String(128))
     meta: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
+
+    __table_args__ = (
+        # Live rows only: a trashed source keeps its file, and the same bytes may
+        # legitimately be imported again once the first import is gone.
+        Index(
+            "uq_source_file_checksum",
+            "checksum",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+    )
 
 
 class ImportJob(UUIDPrimaryKeyMixin, TimestampMixin, Base):
@@ -114,12 +132,25 @@ class ImportJob(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
 
 class ImportItem(UUIDPrimaryKeyMixin, TimestampMixin, Base):
-    """One extracted candidate result awaiting teacher review/approval."""
+    """One extracted candidate result awaiting teacher review/approval.
+
+    `extracted` is only ever the document's own words, and `missing` names what a person
+    still has to supply before this can become content - an option list with no answer key
+    is `["answer"]`, and the review screen cannot approve it until someone writes the key.
+    `note` says the same thing in the importer's own sentence for the teacher to read.
+    `filing` is the teacher's choice about where the content goes once approved (level,
+    status, language, tags), kept apart from `extracted` because it is not document text.
+    `position` is where the candidate sat in the document, which is the only ordering the
+    review queue can honestly show - a UUID says nothing about the paper it came from.
+    """
 
     __tablename__ = "import_item"
 
     job_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("import_job.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    position: Mapped[int] = mapped_column(
+        Integer, default=0, server_default=text("0"), nullable=False
     )
     detected_kind: Mapped[str | None] = mapped_column(String(64))  # question/vocabulary/reading/...
     detected_type: Mapped[str | None] = mapped_column(String(64))
@@ -133,11 +164,39 @@ class ImportItem(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         nullable=False,
     )
     extracted: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
+    missing: Mapped[list] = mapped_column(
+        JSONB, default=list, server_default=text("'[]'::jsonb"), nullable=False
+    )
+    filing: Mapped[dict] = mapped_column(
+        JSONB, default=dict, server_default=text("'{}'::jsonb"), nullable=False
+    )
+    note: Mapped[str | None] = mapped_column(Text)
     corrected: Mapped[dict | None] = mapped_column(JSONB)
     result_ref_type: Mapped[str | None] = mapped_column(String(64))
     result_ref_id: Mapped[uuid.UUID | None] = mapped_column(PG_UUID(as_uuid=True))
 
     job: Mapped[ImportJob] = relationship(back_populates="items")
+
+    __table_args__ = (
+        # The review queue is one job's pending rows, read first and most. (migration 0007)
+        Index("ix_import_item_job_decision", "job_id", "decision"),
+        # The queue in the order the paper was written, which `position` is the only
+        # column that knows. (migration 0007)
+        Index("ix_import_item_job_position", "job_id", "position"),
+        # One content row is the result of at most one candidate: the pair is written only
+        # when a row is filed, and a row that points at a question another row already
+        # claims cannot exist. Approving the same candidate twice is a different race and a
+        # different guard - each request mints its own content id, so this index has nothing
+        # to disagree about, and `import_service._locked` is what refuses the second one.
+        # (migration 0007)
+        Index(
+            "uq_import_item_result",
+            "result_ref_type",
+            "result_ref_id",
+            unique=True,
+            postgresql_where=text("result_ref_id IS NOT NULL"),
+        ),
+    )
 
 
 # --------------------------------------------------------------------------- #

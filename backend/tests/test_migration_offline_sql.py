@@ -205,6 +205,58 @@ def test_downgrade_renders_every_drop(
     assert set(_DROP_INDEX_RE.findall(downgrade_sql)) - rebuilt == set(index_tuples(app_metadata))
 
 
+def _statements(sql: str) -> set[str]:
+    """The render's DDL, whitespace-normalised, so two renders can be compared.
+
+    Alembic interleaves `-- Running upgrade ...` comments and its own log lines with
+    the statements; both are dropped here because they describe the script rather than
+    change the schema.
+    """
+    body = "\n".join(
+        line
+        for line in sql.splitlines()
+        if not line.lstrip().startswith(("--", "INFO", "WARN", "BEGIN", "COMMIT"))
+    )
+    return {" ".join(part.split()) for part in body.split(";") if part.strip()}
+
+
+def test_head_upgrades_from_its_own_previous_state(
+    upgrade_sql: str, app_metadata: MetaData
+) -> None:
+    """`alembic upgrade <parent>:<head> --sql` is what an already-deployed database runs.
+
+    The whole-chain render proves a fresh install reaches the current schema. It says
+    nothing about whether the newest revision is a *step*: a revision that quietly
+    rebuilt the schema would be invisible in it, and would fail on a server that has
+    data in the tables. So the head is rendered against its own parent and checked
+    three ways - it stamps only itself, it creates nothing bootstrap already created,
+    and every statement it emits is one the fresh install emits too.
+    """
+    from migration_replay import chain_paths, replay_upgrade, revision_identifiers
+
+    paths = chain_paths()
+    assert len(paths) >= 2, "the step test needs a head with a parent"
+    head_id, parent_id = revision_identifiers(paths[-1])
+    assert parent_id == revision_identifiers(paths[-2])[0], "the chain is not linear"
+
+    step = _alembic("upgrade", f"{parent_id}:{head_id}", "--sql")
+    assert "CREATE TABLE alembic_version" not in step, (
+        "only the base revision may create the version table"
+    )
+    assert f"version_num='{head_id}'" in step, f"{head_id} never stamped"
+
+    rebuilt = {t for t, _ in _TABLE_BLOCK_RE.findall(step)}
+    bootstrap = set(replay_upgrade().metadata.tables)
+    assert not rebuilt & bootstrap, f"the head rebuilds tables the base already made: {sorted(rebuilt & bootstrap)}"
+    assert rebuilt <= set(app_metadata.tables), f"head creates an unknown table: {sorted(rebuilt)}"
+
+    assert _statements(step) <= _statements(upgrade_sql), (
+        "the step renders DDL a fresh install does not: "
+        f"{sorted(_statements(step) - _statements(upgrade_sql))}"
+    )
+    assert _statements(step), "the head revision renders no DDL at all"
+
+
 def test_offline_sql_is_pure_ddl(upgrade_sql: str) -> None:
     assert upgrade_sql.startswith("BEGIN;")
     assert upgrade_sql.rstrip().endswith("COMMIT;")
@@ -296,3 +348,27 @@ def test_every_committed_revision_appears_in_the_rendered_chain(
     ):
         assert statement in upgrade_sql, f"{index} never rendered as {statement!r}"
         assert f"DROP INDEX {index}" in downgrade_sql, f"{index} never reversed"
+
+    # 0007: the first revision that widens a table as well as indexing one. The two
+    # NOT NULL columns need their rendered default - an offline script over existing
+    # rows fails without it - and `result_ref_id IS NOT NULL` is what makes the
+    # one-content-per-candidate rule mean anything at all.
+    assert "ALTER TABLE source_file ADD COLUMN checksum VARCHAR(128);" in upgrade_sql
+    assert (
+        "CREATE UNIQUE INDEX uq_source_file_checksum ON source_file (checksum) "
+        "WHERE deleted_at IS NULL" in upgrade_sql
+    )
+    assert (
+        "ALTER TABLE import_item ADD COLUMN missing JSONB DEFAULT '[]'::jsonb NOT NULL"
+        in upgrade_sql
+    )
+    assert (
+        "ALTER TABLE import_item ADD COLUMN position INTEGER DEFAULT 0 NOT NULL" in upgrade_sql
+    )
+    assert "CREATE INDEX ix_import_item_job_position ON import_item (job_id, position)" in upgrade_sql
+    assert (
+        "CREATE UNIQUE INDEX uq_import_item_result ON import_item "
+        "(result_ref_type, result_ref_id) WHERE result_ref_id IS NOT NULL" in upgrade_sql
+    )
+    for column in ("checksum", "missing", "filing", "note", "position"):
+        assert f"DROP COLUMN {column}" in downgrade_sql, f"{column} never reversed"

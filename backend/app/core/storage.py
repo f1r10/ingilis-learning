@@ -13,6 +13,7 @@ credentials would outlive the lesson it was made for.
 from __future__ import annotations
 
 import io
+import os
 import re
 import secrets
 import threading
@@ -35,6 +36,26 @@ _SAFE_NAMESPACE = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
 #: download never holds a connection on a huge slice, large enough to keep the request
 #: count down for a two-minute recording.
 _CHUNK_BYTES = 1 << 20
+
+_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+
+#: How long a stored display name may be, which is the width of the column holding it.
+DISPLAY_NAME_LIMIT = 500
+
+
+def safe_display_name(raw: str | None, *, limit: int = DISPLAY_NAME_LIMIT) -> str | None:
+    """The uploaded filename, kept only as a label a teacher can recognise.
+
+    One rule for every upload this platform stores, because the name is the field a
+    client controls completely: it never reaches a path, so separators, control
+    characters and an over-long name are gone before a row is written. Callers that
+    store a file use this and get their key from `ObjectStorage.build_key` instead.
+    """
+    if not raw:
+        return None
+    basename = os.path.basename(raw.replace("\\", "/"))
+    cleaned = _CONTROL_CHARS.sub(" ", basename).strip()
+    return cleaned[:limit] or None
 
 
 class ObjectMissing(Exception):

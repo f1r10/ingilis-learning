@@ -13,6 +13,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { ApiError, mediaUrl } from "../api/client";
 import { mediaApi, type MediaAsset, type MediaSummary } from "../api/media";
+import { size } from "../i18n/format";
 
 const BYTES_PER_MB = 1024 * 1024;
 
@@ -253,7 +254,7 @@ function UploadCard({
   onDone: (note: string | null) => void;
   onError: (e: ApiError) => void;
 }) {
-  const { t, i18n } = useTranslation();
+  const { t } = useTranslation();
   const input = useRef<HTMLInputElement>(null);
   const [file, setFile] = useState<File | null>(null);
   const [label, setLabel] = useState("");
@@ -294,7 +295,7 @@ function UploadCard({
         t("media.too_large", {
           label: format.label,
           mb: maxMbByKind?.[format.kind] ?? Math.round(ceiling / BYTES_PER_MB),
-          size: formatSize(chosen.size, i18n.language),
+          size: size(chosen.size),
         }),
       );
       setFile(null);
@@ -418,7 +419,7 @@ function MediaRow({
           </div>
         </td>
         <td className="small">{t(`media.kind_${row.kind}`)}</td>
-        <td className="small">{row.size_bytes ? formatSize(row.size_bytes, i18n.language) : "—"}</td>
+        <td className="small">{row.size_bytes ? size(row.size_bytes) : "—"}</td>
         <td className="small">
           {row.kind === "image"
             ? row.width && row.height
@@ -555,15 +556,4 @@ function Preview({
       onLoadedMetadata={(e) => onDuration(e.currentTarget.duration)}
     />
   );
-}
-
-function formatSize(bytes: number, locale: string) {
-  const units = ["B", "KB", "MB", "GB"];
-  let value = bytes;
-  let unit = 0;
-  while (value >= 1024 && unit < units.length - 1) {
-    value /= 1024;
-    unit += 1;
-  }
-  return `${new Intl.NumberFormat(locale, { maximumFractionDigits: unit ? 1 : 0 }).format(value)} ${units[unit]}`;
 }

@@ -588,10 +588,16 @@ def test_an_options_layout_is_stable_for_one_seed_and_differs_between_items() ->
 
 
 def sections(*specs: tuple[str, bool]) -> dict[uuid.UUID, SimpleNamespace]:
-    """Parts in the order a teacher wrote them, keyed by their own ids."""
+    """Parts in the order a teacher wrote them, keyed by their own ids.
+
+    The ids are stable rather than random because `_deal` shuffles a part with
+    `seed + str(section.id)`: a test that asks whether a shuffling part was ever dealt in a
+    different order would answer that question afresh on every run if the ids moved, and an
+    assertion that holds only most days is not a guard.
+    """
     out: dict[uuid.UUID, SimpleNamespace] = {}
     for position, (title, shuffles) in enumerate(specs):
-        key = uuid.uuid4()
+        key = uuid.UUID(int=position + 1)
         out[key] = SimpleNamespace(id=key, title=title, position=position, shuffle_items=shuffles)
     return out
 

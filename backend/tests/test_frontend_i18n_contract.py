@@ -30,6 +30,7 @@ _TEMPLATE_CALL = re.compile(r"\bt\(\s*`([^`]*)`\s*\)")
 _REFUSAL_SOURCES = (
     REPO_ROOT / "backend/app/services/exam_service.py",
     REPO_ROOT / "backend/app/services/attempt_service.py",
+    REPO_ROOT / "backend/app/services/import_service.py",
 )
 _REFUSAL_CLASSES = {
     "ExamError",
@@ -41,6 +42,12 @@ _REFUSAL_CLASSES = {
     "AttemptNotFound",
     "AttemptClosed",
     "NotAssigned",
+    "ImportProblem",
+    "JobNotFound",
+    "IncompleteCandidate",
+    "AlreadyFiled",
+    "AlreadyInBank",
+    "QueueDown",
 }
 
 #: A refusal the router itself makes, rather than one a service raised and the router mapped.
@@ -49,6 +56,7 @@ _REFUSAL_CLASSES = {
 _ENDPOINT_SOURCES = (
     REPO_ROOT / "backend/app/api/v1/endpoints/exams.py",
     REPO_ROOT / "backend/app/api/v1/endpoints/student_exams.py",
+    REPO_ROOT / "backend/app/api/v1/endpoints/imports.py",
 )
 _ENDPOINT_REFUSALS = {"NotFound", "Conflict", "ValidationFailed"}
 
@@ -87,7 +95,7 @@ def _endpoint_refusals() -> tuple[dict[str, list[str]], list[str]]:
 
 
 def _refusal_ast() -> tuple[dict[str, list[str]], list[str]]:
-    """Every code the exam services can answer with, and every refusal that names none.
+    """Every code the scanned services can answer with, and every refusal that names none.
 
     A code reaches the vocabulary from a `code=` at the raise site, from the default of a refusal
     class, or from a refusal table (`_START_REFUSALS`) that picks the pair out of the reason the
@@ -232,6 +240,31 @@ def test_every_question_type_is_named_in_every_locale(locale_maps):
         assert not extra, f"{locale}.json names types the engine does not offer: {extra}"
 
 
+def test_every_candidate_remark_is_named_in_every_locale(locale_maps):
+    """A remark on a candidate is a code, and the review screen supplies the words.
+
+    `import_candidates` reads a paper and leaves a note on a card that came out short, and auto
+    mode leaves a refusal's code where the bank said no. The card stores which remark it is, not
+    an English sentence, because the queue is read in four languages; `imports.note_<code>` is
+    where those languages say it, and `note_codes()` is the vocabulary `/imports/meta` hands the
+    screen. A new remark without copy would print the bare code in Baku, and a code that stops
+    being written would leave four sentences nobody renders.
+    """
+    from app.services import import_service
+
+    codes = set(import_service.note_codes())
+    assert codes, "the remark table is empty - the reader stopped leaving notes"
+    for locale, flat in locale_maps.items():
+        unnamed = sorted(f"imports.note_{code}" for code in codes if f"imports.note_{code}" not in flat)
+        assert not unnamed, f"{locale}.json has no words for {unnamed}"
+        orphans = sorted(
+            key[len("imports.note_") :]
+            for key in flat
+            if key.startswith("imports.note_") and key[len("imports.note_") :] not in codes
+        )
+        assert not orphans, f"{locale}.json carries remarks no card can hold: {orphans}"
+
+
 def test_ui_language_menu_offers_exactly_the_shipped_locales(source_files):
     index = (FRONTEND_SRC / "i18n" / "index.ts").read_text(encoding="utf-8")
     registered = set(re.findall(r"(\w+)\s*:\s*\{\s*translation\s*:", index))
@@ -248,7 +281,7 @@ def test_ui_language_menu_offers_exactly_the_shipped_locales(source_files):
 # --------------------------------------------------------------------------- #
 
 
-def test_every_exam_refusal_names_the_rule_it_broke() -> None:
+def test_every_refusal_names_the_rule_it_broke() -> None:
     """A refusal without a code can only be shown as the server's own English.
 
     The screens print `e.message`, so an English sentence from a service lands in front of a
@@ -284,7 +317,7 @@ def test_every_refusal_code_is_named_in_every_locale(locale_maps) -> None:
             for key in flat
             if key.startswith("errors.") and key[len("errors.") :] not in codes
         )
-        assert not orphans, f"{locale}.json names refusals no exam service raises: {orphans[:8]}"
+        assert not orphans, f"{locale}.json names refusals no scanned service raises: {orphans[:8]}"
 
 
 def test_a_refusal_sentence_carries_the_numbers_the_server_sent(locale_maps) -> None:

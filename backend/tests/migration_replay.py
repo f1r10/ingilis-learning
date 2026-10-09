@@ -46,6 +46,17 @@ class _RecordingOp:
         sa.Table(table_name, self.metadata, *elements)
         self.created_tables.append(table_name)
 
+    def add_column(self, table_name: str, column: Any, **_kw: Any) -> None:
+        """Attach a column a later revision puts onto an existing table.
+
+        Revisions after bootstrap widen the schema as well as index it, and the
+        point of this harness is that the *models* are not the evidence. A column
+        therefore reaches the replayed MetaData only through the literal
+        ``op.add_column`` that a real ``alembic upgrade`` would render, defaults
+        and nullability included.
+        """
+        self.metadata.tables[table_name].append_column(column)
+
     def create_index(
         self,
         index_name: str,
@@ -80,7 +91,7 @@ class _RecordingOp:
     def __getattr__(self, name: str) -> Any:
         raise AssertionError(
             f"a committed revision uses unsupported op {name!r}; the replayed schema must be "
-            "built from literal create_table/create_index/drop_index calls only"
+            "built from literal create_table/add_column/create_index/drop_index calls only"
         )
 
 

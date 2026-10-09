@@ -34,6 +34,7 @@ export default function Layout() {
                 <NavLink to="/reading" className={({ isActive }) => (isActive ? "active" : "")}>{t("nav.reading")}</NavLink>
                 <NavLink to="/listening" className={({ isActive }) => (isActive ? "active" : "")}>{t("nav.listening")}</NavLink>
                 <NavLink to="/media" className={({ isActive }) => (isActive ? "active" : "")}>{t("nav.media")}</NavLink>
+                <NavLink to="/imports" className={({ isActive }) => (isActive ? "active" : "")}>{t("nav.imports")}</NavLink>
                 <NavLink to="/catalogs" className={({ isActive }) => (isActive ? "active" : "")}>{t("nav.catalogs")}</NavLink>
                 <NavLink to="/exams" className={({ isActive }) => (isActive ? "active" : "")}>{t("nav.exams")}</NavLink>
                 <NavLink to="/exams/grading" className={({ isActive }) => (isActive ? "active" : "")}>{t("nav.grading")}</NavLink>

@@ -9,7 +9,7 @@ content / examination / analytics platform. It is **not** hard-coded to English 
 its interface ships in **Azerbaijani, English, Russian and Turkish**. All branding is
 editable in Admin Settings — the platform name is never hard-coded.
 
-> **Current status:** delivery phases 1-7 are implemented and accepted — the complete
+> **Current status:** delivery phases 1-8 are implemented and accepted — the complete
 > domain schema, authentication, users and groups, branding + localization (az/en/ru/tr),
 > the question bank with the full question engine, the vocabulary bank with learner study
 > cards, the reading, listening and media modules on S3/MinIO object storage, the
@@ -17,8 +17,10 @@ editable in Admin Settings — the platform name is never hard-coded.
 > the server-timed attempt engine and the teacher's grading queue: papers that pin the
 > question version each line was answered at, sittings a learner can lose their tab to and
 > come back to, marks a re-mark can move, and refusals the screen says in the learner's own
-> language. Still to
-> come: document import and review, monitoring, analytics, exports/backups/restore,
+> language — plus the document importer, which reads seven formats from their own bytes with
+> this repository's own parsers, turns them into candidate cards, and files content only when
+> a person approves a card. Still to
+> come: monitoring, analytics, exports/backups/restore,
 > the local AI/OCR/STT/translation adapters, and the final security and performance pass.
 > The adapter protocols and the worker exist now as disabled-by-default paths on purpose —
 > the product must stay fully usable with every provider set to `none`.
@@ -155,6 +157,7 @@ See `.env.example` for the annotated, complete list. Highlights:
 | `DATABASE_URL` / `REDIS_URL` | Datastores. |
 | `OBJECT_STORAGE_*` | S3/MinIO endpoint, credentials, bucket. |
 | `MAX_VIDEO_UPLOAD_MB` / `MAX_FILE_UPLOAD_MB` | Configurable upload limits (default video 700 MB). |
+| `MAX_DOCUMENT_UPLOAD_MB` | Ceiling for one document handed to the importer (default 60). Separate because a document is *read*, not served: enforced while the bytes are still streaming, and published by `GET /imports/meta` so the screen states the number in its own refusal instead of guessing it. |
 | `BOOTSTRAP_ADMIN_USERNAME` / `BOOTSTRAP_ADMIN_PASSWORD` | Admin created by the seed; changeable later in Settings. |
 | `ENABLED_UI_LANGUAGES` / `LEARNING_LANGUAGES` / `TRANSLATION_LANGUAGES` | Seed defaults; overridable at runtime in Admin Settings. |
 | `AI_PROVIDER` / `OCR_PROVIDER` / `STT_PROVIDER` / `TRANSLATION_PROVIDER` | `none` (default) or a local/paid option. |
@@ -406,6 +409,33 @@ GET  /api/v1/student/attempts/{token} | /steps | /result   the sitting, its orde
 POST /api/v1/student/attempts/answer        autosave one line, graded by the bank's rules
 POST /api/v1/student/attempts/submit        close it through the one path every closing uses
 POST /api/v1/student/attempts/tab-switch    the browser's own report, stored as such
+
+GET  /api/v1/imports/meta             the kinds, remarks, statuses, levels, languages,
+                                       sortable columns, page cap and upload ceiling the
+                                       screen is built from - read from the code that
+                                       enforces them
+GET  /api/v1/imports                  the queues: q/status/kind/decision/sort/order/page
+POST /api/v1/imports                  201 with the job; the same bytes again answer 200
+                                       with `{job, duplicate: true}` and the queue that
+                                       already exists; `?auto=true` files every complete
+                                       card as it is read
+GET  /api/v1/imports/{job_id}         the job, its counts and the reason it failed
+DELETE /api/v1/imports/{job_id}       trash the queue; the stored file goes only when no
+                                       other queue still cites it
+GET  /api/v1/imports/{job_id}/document  the original bytes, as they were uploaded
+POST /api/v1/imports/{job_id}/retry   read the paper again - refused with
+                                       `job_has_candidates` once it produced any
+GET  /api/v1/imports/{job_id}/items   the candidates, in the paper's own order, with the
+                                       document's text, the teacher's correction, what is
+                                       missing and where each row came from
+PATCH /api/v1/imports/items/{item_id} edit `corrected` and `filing`; `extracted` is never
+                                       overwritten, and a field the kind does not own is
+                                       refused before it is stored
+POST /api/v1/imports/items/{item_id}/decision  approve (writes through the bank's own
+                                       services, one content item per candidate) or reject
+                                       (a rejected row reopens to pending if it is edited)
+POST /api/v1/imports/bulk             approve / reject / file over a page, answered row by
+                                       row as done / refused / not_found
 ```
 
 Admin sessions are stateless signed cookies, but each embeds a `session_epoch`;
@@ -495,10 +525,11 @@ Implemented: **1) shell/branding/localization, 2) auth + users/groups,
 3) Question Bank + full question engine, 4) vocabulary bank and study cards,
 5) reading, listening and the media library on object storage,
 6) catalogs and practice, 7) exams: authoring, assignments, the server-timed attempt engine
-and the teacher's grading queue** + the
+and the teacher's grading queue, 8) document import: seven formats parsed locally, a reviewed
+candidate queue and approval that files into the banks** + the
 complete schema foundation and adapter/worker skeletons.
 
-Next: 8) document import + review · 9) monitoring/activity
+Next: 9) monitoring/activity
 · 10) analytics · 11) exports/backups · 12) local AI/OCR/transcription · 13) security &
 performance hardening.
 
@@ -595,8 +626,9 @@ filed in it - the binding is what stops a reading question from degrading into a
 
 Derived fields are derived: `word_count` is counted from the text in the same transaction
 (a `PATCH` that sends one is refused, not ignored), and `transcript_source` can only ever
-come out as `manual` or `absent` here, because `imported` belongs to the Phase 8 importer
-and `auto` to the Phase 12 speech adapter. Going to `ready` is refused for a listening with no live
+come out as `manual` or `absent` here: `imported` is still reserved (the Phase 8 importer reads
+documents, and a document carries no sound) and `auto` belongs to the Phase 12 speech adapter.
+Going to `ready` is refused for a listening with no live
 recording and no transcript - on its own or inside a bulk action - since an exercise with
 nothing to hear is what a class discovers first. Clearing a transcript clears its cue
 lines with it.
@@ -814,6 +846,49 @@ version it is pinned to, the mark it carries, whether it can be auto-marked, and
 that will refuse Publish before the teacher presses it; `pages/StudentExamRun.tsx` shows the
 server's countdown, autosaves every line, keeps a resumed sitting on the same line it left, and
 shows the result exactly as far as the paper allows.
+
+## Document import and review (Phase 8)
+
+A teacher hands the platform a paper and decides, row by row, what of it becomes content. Three
+separate decisions, and the code keeps them separate: **the bytes** decide the format, **the
+shapes** decide the candidates, **a person** decides the content.
+
+`app/core/doc_types.py` names the format from an 8 KiB head before it asks the filename: a zip is
+Word or Excel only once its members say so, a file is text only if it decodes strictly under
+UTF-8, cp1254, cp1251 or cp1252 (UTF-16 only behind its own BOM), and binary that happens to decode
+is refused on its control characters. A table is proven by three lines agreeing on a column count,
+so a lesson with one comma in it is not a CSV and a semicolon export from a Turkish Excel is.
+`app/services/document_parsing.py` then reads the text with the standard library alone - no Office,
+no Acrobat, no network: Word paragraphs with their split runs rejoined and their tables kept as
+cells, Excel sheet by sheet, PDF through its own content-stream tokenizer (escape sequences, `TJ`
+gaps, the positioning operators that separate lines, subset fonts through their `ToUnicode` maps,
+compressed object streams), Markdown with its markup dropped. Every block keeps its provenance:
+page, sheet, offset.
+
+`app/services/import_candidates.py` turns shapes into cards. A header is read in whatever language
+the teacher wrote it in (`soru/şıklar/doğru`, `word/meaning/example`), an answer may be a letter, a
+number or the option's own words, and two identical options that both match mark **nothing** and
+report the missing key rather than guessing. Prose is read the same careful way: a numbered stem and
+the lettered lines under it are one question, options stop where the next stem starts, a heading plus
+the paragraphs under it is a reading. What the reader cannot classify stays a note, **with a code
+that says why** - `unmatched_header`, `word_without_meaning`, `options_without_answer`,
+`row_without_role` - and every one of them exists in all four locales.
+
+Nothing becomes content until a person says so. `PATCH /imports/items/{id}` never overwrites the
+document's own words: the teacher's version goes in `corrected`, and both are shown, so an approval
+stays provable against the paper it came from. Approving writes through the bank's services - the
+word is filed in the language the *teacher* chose, not the one the file claimed - and one
+candidate is filed exactly once: the row is re-read under a lock, into the object the decision
+is made from, so two people who approve the same sentence in the same second leave one question
+in the bank and a `candidate_filed` refusal for the second. `uq_import_item_result` holds the
+other half - no two candidates may point at the same content row. Identical bytes uploaded twice return the queue that already exists instead of opening
+a second one; re-reading a job that already produced candidates is refused; a document over
+`MAX_DOCUMENT_UPLOAD_MB` is refused while it is still streaming and leaves nothing behind.
+
+`pages/Imports.tsx` is the upload and the list of queues; `pages/ImportReview.tsx` is the queue
+itself - filters, both orderings, page-scoped bulk selection ("50 of 300 selected", never more),
+per-row editing and filing, and a bulk action that answers **row by row** with `done` / `refused` /
+`not_found` and the reason, so a page of work never collapses into one silent failure.
 
 ---
 

@@ -3,12 +3,12 @@
 Continuation state file. Reread this after any context loss and keep going - do not
 re-plan work that is already recorded as done here.
 
-- Current phase: **Phase 8 - document import and the review pipeline** (Phases 1-7 accepted)
+- Current phase: **Phase 9 - monitoring and activity** (Phases 1-8 accepted)
 - Git: branch `main`, remote `https://github.com/f1r10/ingilis-learning.git`
 - Last commits: Phase 1-2 `2ab3294`, Phase 3 `c650bf5`, Phase 4 `20e5006`, Phase 5 `53911f2`,
-  Phase 6 `feat(phase-6): complete catalogs and practice`,
-  Phase 7 `feat(phase-7): complete exams assignments and attempt engine` - all pushed.
-  `git rev-parse HEAD` is the authoritative tip; each phase commit rewrites this line with its own SHA
+  Phase 6 `1f0aa49`, Phase 7 `545de87` (`feat(phase-7): complete exams assignments and attempt
+  engine`) - all pushed, `origin/main` == `HEAD`. `git rev-parse HEAD` is the authoritative tip;
+  each phase commit rewrites this line with its own SHA
 
 ---
 
@@ -70,7 +70,7 @@ language, never developer jargon. Heavy operations run in the worker.
 | 5 | Reading + listening + media libraries (object storage) | **accepted - `verify_phase12.sh` exit 0, 13/13 steps, 0 mandatory skips, live browser click-through on teacher and learner screens** |
 | 6 | Catalogs + practice | **accepted - `verify_phase12.sh` exit 0, 13/13 steps, 0 mandatory skips, live browser click-through on teacher and learner screens** |
 | 7 | Exams + assignments + attempt engine + grading | **accepted - `verify_phase12.sh` exit 0, 13/13 steps, 0 mandatory skips, live browser click-through on teacher, grading and learner screens** |
-| 8 | Document import + review pipeline | not started |
+| 8 | Document import + review pipeline | **accepted - `verify_phase12.sh` exit 0, 13/13 steps, 0 mandatory skips, live browser click-through on the upload, queue and review screens** (the first run was 12/13; the three failures are in §9) |
 | 9 | Monitoring + activity | not started |
 | 10 | Analytics | not started |
 | 11 | Exports + backups + restore | not started |
@@ -686,7 +686,185 @@ are `errors.*` refusal codes, four key-identical files.
   learner trying to open a paper nobody assigned them to. Durations and dates read back in az/en/
   ru/tr on the teacher's sittings table and the learner's result header.
 
-## 9. Working commands
+## 9. Phase 8 - document import and review pipeline (accepted)
+
+Backend: three new services, one new core module, one new router, one new worker task and one
+migration. The API is now **155 paths / 202 operations**; Phase 8 adds **9 paths / 11 operations**
+all under `/imports` (`POST/GET /imports`, `GET /imports/meta`, `GET|DELETE /imports/{job_id}`,
+`GET /imports/{job_id}/document`, `GET /imports/{job_id}/items`, `PATCH` +
+`POST /imports/items/{item_id}[/decision]`, `POST /imports/{job_id}/retry`, `POST /imports/bulk`)
+and removes nothing (the pre-Phase-8 surface is still exactly 146 / 191).
+
+The phase's whole promise is that **the bytes decide the format, the shapes decide the candidates,
+and a person decides the content.** Nothing in it invents meaning: a candidate carries only text
+that is in the document, an incomplete row is kept and named as incomplete, and a row becomes
+content only when somebody approves it.
+
+* `app/core/doc_types.py` (10 functions) - what these bytes actually are. `identify` reads an
+  8 KiB head and only then asks the filename: a `PK` zip is Word or Excel **once its members say
+  so** (`word/document.xml`, `xl/workbook.xml`), a file is text only if it decodes strictly under
+  `utf-8-sig`, `cp1254`, `cp1251` or `cp1252` (UTF-16 only behind its own BOM - an even-length
+  Windows text file "decodes" as UTF-16 without ever failing and comes back as noise), and binary
+  that happens to decode is still refused on its control characters. `delimiter_of` proves a table
+  by three lines agreeing on a column count, so a prose lesson containing one comma is not a table
+  and a semicolon export from a Turkish Excel is. `refusal_reason` names what is missing
+  ("that file is Rich Text, and this importer reads Word 2007 or later") instead of guessing a
+  format for it. `DocFormat` is the single registry the parser, the upload form's `accept`, the
+  list screen's format column and `/imports/meta` all read, so the screen cannot promise a format
+  the importer would refuse.
+* `app/services/document_parsing.py` (40 functions, 1001 lines) - the document's own text, stdlib
+  only. Word: paragraphs in order, `w:t` runs that the formatter split rejoin into one sentence,
+  tables keep their cells as cells, `missing body` and `truncated` are different refusals. Excel:
+  sheets read by name and cells by column, so a candidate can say which sheet it came from. PDF:
+  its own content-stream tokenizer (octal escapes, balanced parentheses inside literal strings,
+  `TJ` arrays whose wide gaps become the space between two words), line position from `Td`/`TD`/
+  `T*` so a page written by stepping down the page keeps its lines apart, subset fonts read
+  through their own `ToUnicode` map, object streams inflated, and a picture-only PDF failing with
+  the capability it needs named rather than returning an empty document. Text/Markdown: the
+  encoding it decoded under is recorded, `#` headings become headings with the markup dropped.
+  Every block carries provenance (`page`, `sheet`, `offset`) and no parser returns a word the
+  document did not have.
+* `app/services/import_candidates.py` (26 functions) - shapes, not meanings. `candidates()` sends
+  csv/tsv/xlsx to the header-reading path and everything else to the shape-reading path.
+  `header_roles` understands the headings a teacher actually writes - `soru/şıklar/doğru`,
+  `срок/вопрос/варианты/ответ`, `word/meaning/example` - and gives each role to one cell only.
+  An answer may be a letter, a one-based number or the option's own words; two identical options
+  that both match mark **no** option and report `missing: ["answer"]`. Lettered option columns are
+  only accepted when they run A,B,C without a gap. Prose: a numbered stem and the lettered lines
+  under it are one question, options stop where the next stem begins, a stem followed by prose is
+  not a choice question, a heading plus the paragraphs under it is a reading, a passage with no
+  heading of its own takes its first sentence as one and says so, a paragraph too short to be a
+  text stays a note, and a two-column word table becomes vocabulary entries. `NOTE_CODES` is the
+  seven remarks a card can carry - each a code, none a sentence.
+* `app/services/import_service.py` (63 functions) - the queue and the decision. An upload is
+  spooled and hashed while it streams, so `MAX_DOCUMENT_UPLOAD_MB` (60, published by `/meta`) is
+  enforced **while the bytes are still arriving** and a file over the ceiling leaves no stored
+  object and no row; the sha256 goes on `source_file.checksum`, and identical bytes answered by
+  `{job, duplicate: true}` return the queue that already exists instead of opening a second one a
+  teacher would have to work through twice. `run_job` claims the job with a conditional `UPDATE`
+  committed on its own, so a second worker arriving mid-parse finds nothing to claim and answers
+  `not_claimed` rather than doubling every candidate. `PATCH /imports/items/{id}` **never
+  overwrites `extracted`** - the teacher's words land in `corrected`, which is what the approval
+  path reads and what the card shows as "the document said / you wrote". A field the kind does not
+  own is refused before it is stored, provenance fields cannot be smuggled in through `filing`, a
+  filed row is closed to editing, and a refused row reopens to `pending` when it is edited, because
+  a changed mind is a new decision. Approval writes through the bank's own services (a question
+  arrives as the bank would build one, a word is filed in the language the **teacher** chose and
+  not the one the paper claimed, a passage becomes one text), and `uq_import_item_result` is what
+  makes one candidate one piece of content even when two people click at the same second. Bulk
+  actions run over a page capped at `/meta`'s number and answer **row by row** with
+  `done` / `refused` / `not_found`; a re-read of a job that already produced candidates is refused
+  with `job_has_candidates` and its count in `params`. An unreachable worker is a 503 about the
+  platform, not a refusal of the teacher's paper.
+* `app/core/tasks.py` and `app/workers/jobs.py`: one task name (`process_import_job`) shared by the
+  enqueue side and the worker, asserted equal by a test; a malformed id is `bad_id` in the log
+  rather than a queue parked in `processing` forever, and any other exception is written as a
+  failure with a sentence, because a worker that gives up quietly leaves a queue waiting for news
+  that will never arrive.
+* `media_service` lost its private `_display_name`; the rule moved to
+  `storage.safe_display_name`, which both the media library and the importer now call.
+* `app/models/content.py`: `source_file.checksum`, and `import_item.missing` / `filing` / `note` /
+  `position` as columns of their own rather than keys inside `extracted`, because what a teacher
+  approved has to stay provable as the document's own text.
+
+Migration: `0007_import_integrity` - `uq_source_file_checksum` (**partial**, `WHERE deleted_at IS
+NULL`, because trash is a soft delete and the same bytes may legitimately be imported again after
+the first copy is gone), `uq_import_item_result` (partial on `result_ref_id IS NOT NULL`: two
+teachers approving one row in one second would otherwise put two questions in the bank from one
+sentence of one paper, and neither read could tell the learner which was the duplicate),
+`ix_import_item_job_decision` ("what is still waiting in this job" is asked on every visit to the
+review screen, and bootstrap only indexes `job_id`), and `ix_import_item_job_position`
+(`import_item.id` is a random UUID, so an unordered read arrives in a different sequence on every
+page - a teacher works through a paper question 1, then 2, then 3), plus the four columns.
+`0001`-`0006` are untouched; `test_migration_offline_sql` pins each new index with its reversal
+and `test_migration_schema_consistency` insists all seven revisions' objects are declared by a
+model. The replay harness (`tests/migration_replay.py`) had to learn `op.add_column` for exactly
+this revision: a schema change that *widens* a table has to reach the replayed `MetaData` through
+the literal call a real `alembic upgrade` would render, defaults and nullability included, or the
+consistency guard would quietly be comparing the models with themselves. Nothing rewrites a row, so an upgrade over data that already breaks a rule reports the
+violation instead of choosing which duplicate to keep.
+
+Rules that are now contractual: a document is named from its bytes and its name only ever breaks a
+tie between text formats; a file this importer cannot read is refused with the reason, never
+emptied into zero candidates and called success; a candidate never contains a word the document
+does not; a choice question with no key is a candidate a person has to finish, not a guess; the
+reader's remarks and the service's refusals are codes, and every one of them exists in four
+locales; a page of the queue is a window, not a way to break a limit; nothing an import produces is
+live content until a person files it, and filing it once closes it - the second approval is refused
+from the row as it stands when the write happens, re-read under a lock rather than as the request
+first remembered it; a trashed source is only
+trashed when no queue still cites it; re-reading a job that already produced candidates is refused
+rather than appended to; a duplicate upload answers with the queue that exists, and says so.
+
+Frontend (no redesign): `api/imports.ts`; `pages/Imports.tsx` (the upload form - formats listed
+from `/meta`, an optional name, the "file complete cards on their own" switch, and the ceiling
+spoken from `/meta` in the refusal rather than guessed in the client - and the list: title search,
+status filter, four sorts with a direction toggle,
+pagination, and per row Open / Original file / Read it again / Remove); `pages/ImportReview.tsx`
+(the queue: kind/decision filters, position and confidence ordering, page-scoped selection with
+"50 of 300 selected" said honestly, the bulk bar whose `file` action carries its own lifecycle
+choice, the per-card editor that shows the document's words and the teacher's words separately, the
+filing pickers for status/level/language/topics/tags, the coded per-row bulk result, the empty
+queue explained, and the failed job's reason as the locale's sentence). `i18n/format.ts` gains two
+formatters: `size()` renders a byte count with the interface's own thousands separator, so the media
+library and the import history cannot write the same 1.5 KB two different ways, and `wordsFor()`
+resolves a remark code through
+`imports.note_*`, then
+`imports.outcome_*`, then `errors.*`, then the server's sentence, then the bare code - so a screen
+can never print an unfilled `{{placeholder}}` and an undeclared code still reads as itself instead
+of as nothing. Routes `/imports` and `/imports/:jobId`, one nav entry. **1392 keys per locale**
+(125 of them new under `imports.*`, 8 codes under `imports.note_*`, 108 `errors.*`), four
+key-identical CRLF files.
+
+### Defects found in this phase and fixed at the root
+
+| Defect | Fix |
+| --- | --- |
+| **A paper saved on Windows came back as one long note.** `_parse_plain` split paragraphs on `\n\n`, and a `\r\n\r\n` file - every text or Markdown lesson written by a Windows editor - contains none. The whole lesson collapsed into a single 918-character `note` card, and the heading inside it never became a heading | `text.replace("\r\n", "\n").replace("\r", "\n")` before the split. Three tests (`test_a_paper_saved_by_a_windows_editor_still_splits_into_paragraphs`, `test_a_markdown_lesson_saved_with_crlf_keeps_its_heading_as_a_heading`, `test_a_markdown_paper_saved_on_windows_is_still_a_heading_and_a_passage`), and proven live: the same `.md` re-uploaded after the fix yields one reading card with its title, where before it yielded one note. Checked by mutation - removing the line turns those three red |
+| **An unfamiliar header was silently demoted.** `_table_candidates` kept every row of an unknown-header sheet as a `note` with `note=None`, while the prose path had already been giving `unmatched_header` for the same event. A teacher saw a row of text and no reason | the branch now names its remark, and its remark says which header it came from. Splitting it exposed a second case that is genuinely different - a *known* header whose row fills no content column (`level;type` in one row) - which now has its own code, `row_without_role` |
+| **A remark was an English sentence, stored and printed.** The candidate `note` was free text and the job's failure was read out of `job.error` directly, so a Turkish screen showed English and could not tell "needs OCR" from "needs a language" | `NOTE_CODES` declares the seven codes the reader can leave, `note_codes()` advertises them (merged with the filing side's `bank_refused`) through `/imports/meta`, and the DB stores the **code**. The screen resolves it - `imports.note_*` for a card, `imports.outcome_*` for a job - through `wordsFor()`, with the server's sentence kept only as the fallback for a code no locale names. Two guards keep it true: an AST walk fails if any `.note =` / `note=` assignment in `import_candidates.py` names something not declared, and the locale test fails if any advertised code is missing from any of the four files. What is left coarse - one outcome code covering "empty" and "damaged" alike - is recorded in §12 rather than hidden |
+| **A rule the worker claimed in prose had no test.** `run_job`'s docstring promised that a second delivery answers `not_claimed`, and nothing in either suite reached it - the live file only ever called the worker once per job, and the API-side refusal (`job_has_candidates`) is a different rule on a different path | `test_a_message_delivered_twice_does_not_read_the_paper_twice` reads one job through `jobs.process_import_job` twice and asserts the second answer, the unchanged candidate count, and that the message which claimed nothing also wrote no audit row. Proven non-vacuous: with `if claimed.rowcount != 1` disabled the second call returned `ok` and filed a second copy |
+| **A spreadsheet missing column B would have shifted every answer in the file.** Reading `a`/`c` as two option columns silently renumbers the key, so `answer: C` would have marked the second option and looked like a clean success | `_letter_option_columns` only accepts a run that starts at `a` and has no gap, and `test_lettered_columns_only_count_when_they_run_from_a_without_a_gap` pins both halves of that |
+| **The importer was about to grow its own copy of the upload-name cleaner.** `media_service._display_name` held the only rule for a field a client controls completely, and a second private copy in a second module is how one of them gets edited and the other forgotten | the function moved to `storage.safe_display_name` (with `DISPLAY_NAME_LIMIT`) and both callers use it, so there is one place the platform decides what an uploaded filename may look like. Its tests moved with it: `test_storage_keys.py` now covers the rule, and the media suite's copy of those cases is gone |
+| **A byte count had one formatter and one caller who had to remember the locale.** `MediaLibrary.tsx` owned a private `formatSize(bytes, locale)` - correct, but local, and it needed `i18n.language` threaded in by hand. The import history shows the same fact (`· 1.5 KB`) on a second screen, and the honest options there were to write it badly or to copy that function | `size(bytes)` in `i18n/format.ts` is the one formatter and reads the interface's locale itself. The media screen's private copy is deleted, so a third screen gets the same words for free instead of a second implementation to forget |
+| **A guard that held only most days.** The exam fixture keyed a paper's parts with `uuid.uuid4()`, and `_deal` shuffles a part with `seed + str(section.id)` - so an assertion about a shuffled part's dealt order was re-drawn on every run, and could pass on the machine that wrote it and fail on the one that reads it | the fixture uses stable ids (`uuid.UUID(int=position + 1)`) with the reason written above it. Not a loosened assertion: the question "was this part ever dealt in a different order" now gets the same answer every time it is asked |
+| **The same paper sent twice in one moment answered 500.** The clean-room gate's live run raised `duplicate key value violates unique constraint "uq_source_file_checksum"` out of an `INSERT INTO source_file`. `_live_by_checksum` asks, the library says "not here", the colleague's transaction commits in between - and that is exactly the moment the index exists for. The `IntegrityError` handler was there, but it wrapped the *second* flush (`import_job`), which never gets reached: the source row is the one that conflicts | both writes are inside the one guard now, so the loser rolls back, takes its copy of the paper back out of the bucket and answers with the queue that won. `test_a_paper_taken_over_by_a_colleague_between_the_lookup_and_the_write_is_a_duplicate` fixes the interleaving the concurrent test only sometimes hits - the pre-check made to answer `None` once - and asserts one source, one job, one stored object, one audit row and no second message to the worker. Checked by mutation: with the source flush back outside the `try`, that test and the concurrent one both raise the same `UniqueViolationError` the gate reported |
+| **Two teachers approving one candidate put two questions in the bank.** The same gate run answered `[200, 200]` where the rule says `[200, 409]`. The row lock was there, and the second request did wait - but a locking ORM read hands back the instance its session's identity map already holds *without refreshing the attributes on it*, so the teacher who arrived second was given the row back and still read the `pending` their own session had loaded before the lock was won. `_locked`'s docstring claimed the refusal "comes from the state"; the state it read was a moment out of date | `.execution_options(populate_existing=True)` on the locking select. The claim is rewritten wherever it was made - in `_locked`, in `SourceFile`/`ImportItem`'s `__table_args__` comments and in `0007`'s docstring - to say which half of "one candidate becomes one content item" an index can hold (no two candidates may point at the same row, since each mints its own id the index has nothing to disagree about) and which half only the re-read can hold. `test_a_candidate_whose_filing_happened_after_the_request_read_it_is_refused` makes that interleaving the setup instead of the luck, and refuses with `candidate_filed` with one question left in the bank. Checked by mutation: without the option it fails `DID NOT RAISE AlreadyFiled` while the concurrent test still passes - which is the reason the deterministic one exists |
+| **The partial-index guard named five and the schema held seven.** `test_indexes_exist_are_unique_where_declared_and_ordered` compares the live partial unique indexes both with the models and with a set spelled out in the test, and `0007` added `uq_source_file_checksum` and `uq_import_item_result` without that second half being kept up. The guard did its job - it refused to let a new partial unique index arrive unargued | the two names are in the list with their argument written next to them (a trashed source frees its bytes for a re-import; a filed pair is unique once it is written at all). Nothing about the indexes themselves was changed to make the test pass: the set derived from the models already matched the live database |
+
+### Evidence
+
+- **Acceptance gate, clean room: `bash scripts/verify_phase12.sh` exit **0**, `passed steps: 13 / 13`
+  - unit/static **813 passed / 0 failed / 0 skipped**, integration (Postgres + Redis + MinIO)
+  **568 passed / 0 failed / 0 errors / 0 skipped** in 13 m 28 s, MinIO round-trip **11 / 11**, and
+  the ARQ worker registered its functions and ran `cron:expire_attempts()` against live PostgreSQL.
+  The verification project's containers and volumes were removed by the run itself.
+- **The first gate run of this phase reported 12 / 13**, with three integration failures, and every
+  one of them was a real defect rather than a flaky environment: the two races in the table above
+  (which the concurrent tests only sometimes reach, and which the clean room reached) and the partial
+  index guard's named set. The 568 above are those two fixes plus the two deterministic tests that
+  keep them honest.
+- **Phase 8's own tests:** offline `test_document_parsing` **38**, `test_import_candidates` **42**,
+  `test_import_rules` **63**; live `tests/integration/test_import_db.py` **38**, run against the dev
+  stack together with `test_schema_live.py` as **48 passed / 0 failed / 0 skipped** in 6 m 33 s. The
+  whole offline half of the repository: **813 passed / 568 deselected**,
+  `ruff check app tests migrations scripts` clean.
+- Frontend compile through the shipped image (`tsc -b && vite build`) green, and the new locale keys
+  verified inside the built bundle the container actually serves.
+- Browser click-through on the dev stack, every row created through the product's own HTTP API or the
+  upload widget itself: Word, Excel, CSV, TXT and Markdown papers read into cards (PDFs and the
+  picture-only refusal are proven in the live suite);
+  a keyed question approved straight into the bank; a word row completed by hand and filed in the
+  language the teacher chose; a foreign-header CSV kept as text and *named*; a bulk approve refused
+  row by row ("0 done · 3 refused") with the reason per row, then a bulk re-file and a bulk refuse
+  over a whole page; both sort directions; page-scoped selection on a 60-row paper shown as
+  "50 of 300 selected"; the CRLF Markdown passage approved into the reading bank; a re-upload of the
+  same bytes answered with the queue that already exists; `Original file` returning the stored bytes
+  unchanged (`text/markdown`, `attachment; filename="crlf_paper.md"`, the same 575 bytes and the same
+  CRLF); and a queue trashed from the list, after which the job answers 404 with
+  `import_not_found`.
+
+## 10. Working commands
 
 ```bash
 # mandatory acceptance (WSL / Linux / macOS / Windows; needs Docker, no make)
@@ -713,15 +891,16 @@ cd backend && mkdir -p ../.tmp \
 # frontend compile, using the image the product actually ships (no local node here)
 wsl.exe -- bash -lc 'rm -rf ~/fecheck; mkdir -p ~/fecheck; cp -r <repo>/frontend/. ~/fecheck/; cd ~/fecheck; docker build -t llp-fe-check .'
 
-# dev stack
-cp .env.example .env && docker compose up --build
+# dev stack - on this machine, with the compose defaults rather than the local .env
+# (a fresh clone elsewhere: `cp .env.example .env`, fill the secrets, then plain `up --build`)
+wsl.exe -e bash -lc 'cd /mnt/c/Users/firon/Documents/Qoder/2026-10-06/1438da7f \
+  && docker compose --env-file /dev/null up -d --build'
 docker compose up -d postgres redis minio
 
 # every docker command on this machine goes through WSL (no docker on the Windows PATH)
 wsl.exe -e bash -lc 'cd /mnt/c/Users/firon/Documents/Qoder/2026-10-06/1438da7f \
-  && docker compose -p llp_ui -f docker-compose.yml -f .tmp/llp-ui.yml up -d --build frontend'
-# after a rebuild `up -d` may keep the old container: say `--force-recreate frontend`
-# and check the asset hash in the served bundle changed.
+  && docker compose --env-file /dev/null up -d --build --force-recreate frontend'
+# after a rebuild check the asset hash in the served bundle changed.
 ```
 
 Windows venv (offline work only): `backend/.venv/Scripts/python.exe`.
@@ -730,7 +909,29 @@ bash state does not persist between commands, so `cd` in every command.
 WSL path for the same repo: `/mnt/c/Users/firon/Documents/Qoder/2026-10-06/1438da7f`
 (run with `wsl -e bash -lc '...'`).
 
-## 10. Environment facts worth not re-discovering
+## 11. Environment facts worth not re-discovering
+
+- **Bringing the dev stack up on this machine: `docker compose --env-file /dev/null up -d --build`**
+  (from WSL, in the repo). The null env file is what keeps the stack on the compose defaults
+  - verified: `docker compose --env-file /dev/null config` publishes
+  `8000 / 5173 / 5432 / 6379 / 9000-9001`. Without it Compose interpolates from the repo `.env`,
+  whose ports are this machine's scratch values (see the `.env` bullet below), and the stack comes
+  up on `55432`, which the Windows venv's `DATABASE_URL` (`localhost:5432`) then cannot see.
+- **The repo `.env` on this machine is not the file the product was designed around**: it pins
+  `BACKEND_PORT=18000 FRONTEND_PORT=15173 POSTGRES_PORT=55432 REDIS_PORT=6380
+  MINIO_API_PORT=19000/19001` while its own `DATABASE_URL`/`REDIS_URL` point at `localhost:5432`
+  and `localhost:6379`, and it sets `BOOTSTRAP_ADMIN_USERNAME=uiverify` where `.env.example` says
+  `admin`. Because the stack runs on compose defaults, that username never took effect - the dev
+  database only holds `admin`. It is a local file, it is gitignored, and it is not a secret to
+  commit; read it, do not trust it as documentation.
+- **A transient notice does not re-translate.** `setMessage(t("imports.duplicate", …))` resolves
+  the sentence when the action happens (three sites do this), so switching the interface language
+  while the banner is on screen leaves the old sentence until the next action. That is the app's
+  convention, not a leak: the copy comes from a key, and the key exists in all four locales.
+- Browser automation: `upload_file` needs the **snapshot uid** of the `input[type=file]`, so take a
+  snapshot first; after the file lands, re-query the submit button (the upload enables it, and a
+  stale uid or handle is a disabled-button click that silently does nothing). The duplicate answer
+  appears as `main .alert`, not as a toast that sweeps itself up.
 
 - WSL Ubuntu: Docker 29.1.3 + Compose 2.40.3 working, internet reachable,
   `python3` = 3.14.4 with **no pip/ensurepip** (venv needs the pip bootstrap), no
@@ -809,10 +1010,11 @@ WSL path for the same repo: `/mnt/c/Users/firon/Documents/Qoder/2026-10-06/1438d
   stack on the `.env` ports needs the frontend's API base to be same-origin (`/api/v1`), not
   a literal `localhost:8000`.
 
-## 11. Known defects / blockers
+## 12. Known defects / blockers
 
-None open. Phases 1-2 through 7 are accepted; the work now is Phase 8 (document import and the
-review pipeline).
+None open. Phases 1-2 through 8 are accepted, Phase 8 on a clean-room gate run that reported
+13/13 steps with zero skips after its first run found the three defects recorded in §9. The work
+now is Phase 9 (monitoring and activity).
 
 Carried forward, each one real and each one owned by a named later phase rather than
 left unmentioned:
@@ -836,7 +1038,16 @@ left unmentioned:
 | A teacher's per-answer mark, the learner's `changed_count` and the tab-switch count are all stored and shown, but nothing on the teacher's side reads the **practice** log yet. `activity_event` already holds every exam answer, mark and feedback row with its `session_id` too - a timeline surface is what is missing | Phase 9 monitoring/activity |
 | An essay in a **practice run** is filed and never marked: the grading queue reads exam answers only (`manual_review.answer_id` points at an `attempt_answer`), which is why the practice screen says "Not marked automatically" rather than promising a teacher | Phase 9 or 10, once a practice answer has a review row to grow |
 | A learner's own language choice is device-local (`localStorage.ui_lang`). The profile's `ui_language` is only a starting point now - a teacher sets it, and there is no endpoint for a learner to write it back for themselves | Phase 13 (self-service profile) |
+| A failed import says **why** in coarse terms on screen: every reason the parsers give (`That file contains no text.`, `That Word document has no body to read.`) is stored on the job's `error` and in the audit row, but the screen shows the one locale sentence for `document_unreadable`, because the reason is a sentence and not a code. A teacher with an empty file therefore reads "This document could not be read" rather than "there was nothing in it" - true, but blunter than what the parser knows. Proven live on a 6-byte empty `.txt`: the job's `error` is `That file contains no text.` while `progress.outcome` is `document_unreadable` | Phase 13, with the rest of the code-and-locale sweep: a small set of failure codes (`document_has_no_text`, `document_damaged`, `document_needs_ocr`) advertised by `/imports/meta` like `note_codes` already is |
+| An import cannot produce a **listening** item. `KINDS` is `question / vocabulary / reading / note` and `APPROVABLE_KINDS` the first three, each with exactly one target in the bank; a document carries no sound, so naming `listening` on a card is refused (`kind_invalid`) rather than filed as a text with an empty player | Phase 12 (the speech adapter, with a real asset to attach) |
 | `listening.seconds` on the media column and the duration probe still read as bare numbers in some teacher tables (`A2 · 0 s`), because `span()` is applied where a sitting is described, not everywhere a file is | Phase 12 probe + Phase 13 sweep |
+
+Closed by Phase 8: a paper is now *read* rather than typed in - seven formats named from their own
+bytes, their text parsed by this repository's own code with no Office, no Acrobat and no network
+call, and their content reviewed row by row before any of it becomes a bank entry. The
+provenance a teacher relies on (`extracted` untouched, `corrected` as theirs, `source_page` and
+`source_sheet` as the document's own place) is stored, not inferred, and a duplicate upload answers
+with the queue that exists instead of opening a second one.
 
 Closed by Phase 7: the exam server is the only clock (`remaining_seconds` recomputed from
 `expires_at`, the worker's sweep for papers nobody came back for, one `finalise` path for every

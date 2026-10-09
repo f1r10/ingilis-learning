@@ -10,6 +10,7 @@ from app.api.v1.endpoints import (
     exams,
     groups,
     health,
+    imports,
     listening,
     media,
     practice,
@@ -41,6 +42,7 @@ api_router.include_router(reading.router)
 api_router.include_router(reading.student_router)
 api_router.include_router(listening.router)
 api_router.include_router(listening.student_router)
+api_router.include_router(imports.router)
 api_router.include_router(catalogs.router)
 api_router.include_router(practice.router)
 api_router.include_router(practice.favorites_router)
